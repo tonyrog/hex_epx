@@ -1,0 +1,8 @@
+application:start(hex_epx).
+
+hex_epx:init_event(out, [{id,a},{type,rectangle},{x,10},{y,10},{width,64},{height,64},{fill,solid},{color,16#ff00ff00}]).
+
+hex_epx:init_event(out, [{id,b},{type,rectangle},{x,10},{y,10},{width,64},{height,64},{fill,solid},{color,16#ffff0000}]).
+
+hex_epx:output([{id,a}], [{x,100},{y,100}]).
+
