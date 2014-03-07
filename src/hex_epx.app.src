@@ -2,7 +2,7 @@
 {application, hex_epx,
  [
   {description, "hex epx plugin"},
-  {vsn, "1.0"},
+  {vsn, git},
   {registered, [hex_epx_server]},
   {applications, [
                   kernel,
