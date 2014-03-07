@@ -1,3 +1,8 @@
+%% do not forget to load LCD-PI32 kernel modules
+%% cd LCD-PI32; sudo ./PI32
+%% start erlang with smp enabled !
+%% erl -smp enable -epx framebuffer_device '"/dev/fb1"'  input_mouse_device '"/dev/input/event0"' lcd_pi32 1
+
 application:start(hex_epx).
 
 hex_epx:init_event(out, [{id,green},{type,rectangle},{x,10},{y,10},{width,64},{height,64},{fill,solid},{color,16#ff00ff00}]).
@@ -6,7 +11,4 @@ hex_epx:init_event(out, [{id,red},{type,rectangle},{x,100},{y,100},{width,64},{h
 
 hex_epx:init_event(out, [{id,blue},{type,rectangle},{x,50},{y,50},{width,64},{height,64},{fill,solid},{color,16#ff0000ff}]).
 
-
-
 hex_epx:output([{id,red}], [{x,120},{y,110}]).
-
