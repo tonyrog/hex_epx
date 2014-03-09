@@ -5,10 +5,29 @@
 
 application:start(hex_epx).
 
+%% RECTANGLES
 hex_epx:init_event(out, [{id,green},{type,rectangle},{x,10},{y,10},{width,64},{height,64},{fill,solid},{color,16#ff00ff00}]).
 
 hex_epx:init_event(out, [{id,red},{type,rectangle},{x,100},{y,100},{width,64},{height,64},{fill,solid},{color,16#ffff0000}]).
 
 hex_epx:init_event(out, [{id,blue},{type,rectangle},{x,50},{y,50},{width,64},{height,64},{fill,solid},{color,16#ff0000ff}]).
+
+%% BUTTONS
+hex_epx:init_event(in, [{id,b1},{type,button},{x,100},{y,100},{width,64},{height,64},{fill,solid},{color,16#ffff0000},{font,[{name,"Arial"},{size,12}]},{text,"OK"}]).
+hex_epx:init_event(in, [{id,b2},{type,button},{x,165},{y,100},{width,64},{height,64},{fill,solid},{color,16#ff00ff00},{font,[{name,"Arial"},{size,12}]},{text,"Push"}]).
+
+%% VALUES
+hex_epx:init_event(out, [{id,v1},{type,value},{x,200},{y,10},{width,64},{height,32},{fill,solid},{color,16#ff00ff00},{font,[{name,"Arial"},{size,12}]},{value,0},{format,"~4..0w"}]).
+
+hex_epx:init_event(out, [{id,v2},{type,value},{x,200},{y,43},{width,64},{height,32},{fill,solid},{color,16#ff00ffff},{font,[{name,"Arial"},{size,12}]},{value,0},{format,"~4.16.0B"}]).
+
+%% IMAGE
+hex_epx:init_event(out, [{id,i1},{type,image},{x,1},{y,1},{image,"/Users/tony/Pictures/Test/solros.bmp"}]).
+
+hex_epx:init_event(out, [{id,i2},{type,image},{x,60},{y,1},{image,"/Users/tony/Pictures/Test/solros.bmp"}]).
+
+hex_epx:init_event(out, [{id,i3},{type,image},{x,120},{y,1},{image,"/Users/tony/Pictures/Test/solros.jpg"}]).
+
+
 
 hex_epx:output([{id,red}], [{x,120},{y,110}]).
