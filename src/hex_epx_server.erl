@@ -46,7 +46,7 @@
 	  id,        %% named widget (outputs)
 	  type,      %% button,rectangle,slider ...
 	  window = default,  %% id of window (if type != window)
-	  state  = normal,   %% or selected ..
+	  state  = normal,   %% or active,selected ..
 	  x = 0   :: integer(),
 	  y = 0   :: integer(),
 	  width  = 32 :: non_neg_integer(),
@@ -61,7 +61,7 @@
 	  min     :: number(),          %% type=value|slider
 	  max     :: number(),          %% type=value|slider
 	  format  :: string(),          %% io:format format
-	  value   :: number(),          %% type=value|slider
+	  value =0 :: number(),         %% type=value|slider
 	  animate,                      %% animation state.
 	  font    :: epx:epx_font(),    %% type=text|button|value
 	  win     :: epx:epx_window(),  %% type = window
@@ -78,6 +78,7 @@
 	  
 -record(state, {
 	  redraw_timer = undefined,
+	  active = [] :: [term()],   %% active widgets pressed
 	  subs = [] :: [#sub{}],
 	  windows :: dict(),  %% term => #widget{}
 	  widgets :: dict()   %% term => #widget{}
@@ -320,17 +321,44 @@ handle_event(Event={button_press,Button,{X,Y,_}},Window,State) ->
 		[] ->
 		    {noreply, State};
 		[W|_] ->  %% z-sort ?
-		    case widget_event(Event, W, State) of
-			W -> {noreply, State};
+		    case widget_event(Event, W, Window, State) of
+			W -> 
+			    {noreply, State};
 			W1 ->
-			    Ws1 = dict:store(W1#widget.id, W1, Ws),
-			    {noreply, State#state { widgets = Ws1}}
+			    ID = W1#widget.id,
+			    Active = [ID | State#state.active],
+			    Ws1 = dict:store(ID, W1, Ws),
+			    {noreply, State#state { active = Active,
+						    widgets = Ws1}}
 		    end
 	    end;
 	false ->
 	    {noreply, State}
     end;
-handle_event(Event={button_release,Button,{X,Y,_}},Window,State) ->
+handle_event(Event={button_release,Button,{_X,_Y,_}},Window,State) ->
+    case lists:member(left,Button) of
+	true ->
+	    %% release "all" active widgets
+	    State1 = 
+		lists:foldl(
+		  fun(ID, Si) ->
+			  Ws = Si#state.widgets,
+			  case dict:find(ID, Ws) of
+			      error -> Si;
+			      {ok,W} ->
+				  case widget_event(Event, W, Window, Si) of
+				      W -> Si; %% no changed
+				      W1 ->
+					  Ws1 = dict:store(W1#widget.id,W1,Ws),
+					  Si#state { widgets = Ws1}
+				  end
+			  end
+		  end, State, State#state.active),
+	    {noreply, State1#state { active = [] }};
+	false ->
+	    {noreply, State}
+    end;
+handle_event(Event={motion,Button,{X,Y,_}},Window,State) ->
     case lists:member(left,Button) of
 	true ->
 	    %% locate an active widget at position (X,Y)
@@ -340,7 +368,7 @@ handle_event(Event={button_release,Button,{X,Y,_}},Window,State) ->
 		[] ->
 		    {noreply, State};
 		[W|_] ->
-		    case widget_event(Event, W, State) of
+		    case widget_event(Event, W, Window, State) of
 			W -> {noreply, State}; %% no changed
 			W1 ->
 			    Ws1 = dict:store(W1#widget.id, W1, Ws),
@@ -350,8 +378,7 @@ handle_event(Event={button_release,Button,{X,Y,_}},Window,State) ->
 	false ->
 	    {noreply, State}
     end;
-handle_event({motion,_Button, _Where},_Window,State) ->
-    {noreply, State};
+
 handle_event({configure,{_X,_Y,_Width,_Height}},_Window,State) ->
     {noreply, State};
 handle_event({resize,{_Width,_Height,_Depth}},_Window,State) ->
@@ -394,32 +421,82 @@ widgets_at_location(Ws,X,Y,WinID) ->
       end, [], Ws).
 
 %% generate a callback event and start animate the button
-widget_event({button_press,_Button,_Where}, W, State) ->
-    if W#widget.type =:= button;
-       W#widget.type =:= rectangle ->
-	    Env = [],
-	    lists:foreach(
-	      fun(#sub{id=ID,signal=Signal,callback=Callback}) ->
-		      if ID =:= W#widget.id ->
-			      callback(Callback,Signal,Env);
-			 true ->
-			      ok
-		      end
-	      end, State#state.subs),
-	    widget_animate_begin(W, flash);
-	true ->
+widget_event({button_press,_Button,Where}, W, Window, State) ->
+    case W#widget.type of
+	button ->
+	    callback_all(W#widget.id, State#state.subs, [{value,1}]),
+	    widget_animate_begin(W#widget { state=active }, press);
+	slider ->
+	    {X,_,_} = Where,
+	    case widget_slider_value(W, X) of
+		{ok,Value} ->
+		    epx:window_enable_events(Window#widget.win, [motion]),
+		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
+		    self() ! refresh,
+		    W#widget { state=active, value = Value };
+		false ->
+		    lager:debug("slider min/max/width error"),
+		    W
+	    end;
+	_ ->
 	    W
     end;
-widget_event({button_release,_Button,_Where}, W, _State) ->
-    W;
-widget_event(_Event, W, _State) ->
+widget_event({button_release,_Button,_Where}, W, Window, State) ->
+    case W#widget.type of
+	button ->
+	    callback_all(W#widget.id, State#state.subs, [{value,0}]),
+	    widget_animate_begin(W#widget{state=normal}, release);
+	slider ->
+	    epx:window_disable_events(Window#widget.win, [motion]),
+	    W#widget{state=normal};
+	_ ->
+	    W
+    end;
+widget_event({motion,_Button,Where}, W, _Window, State) ->
+    case W#widget.type of
+	slider ->
+	    {X,_,_} = Where,
+	    case widget_slider_value(W, X) of
+		{ok,Value} ->
+		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
+		    self() ! refresh,
+		    W#widget { value = Value };
+		false ->
+		    W
+	    end;
+	_ ->
+	    W
+    end;
+widget_event(_Event, W, _Window, _State) ->
     W.
 
+%% given x coordinate calculate the slider value
+widget_slider_value(W=#widget { min=Min, max=Max }, X) ->
+    Width = W#widget.width-2,
+    if is_number(Min), is_number(Max), Width > 0 ->
+	    X0 = W#widget.x+1,
+	    X1 = X0 + Width - 1,
+	    Xv = clamp(X, X0, X1),
+	    R = (Xv - X0) / (X1 - X0),
+	    {ok,trunc(Min + R*(Max - Min))};
+       true ->
+	    false
+    end.
+
+
+widget_animate_begin(W, press) ->
+    lager:debug("animate_begin: down"),
+    self() ! refresh,
+    W#widget { animate = {color,{sub,16#00333333}} };
+widget_animate_begin(W, release) ->
+    lager:debug("animate_begin: up"),
+    self() ! refresh,
+    W#widget { animate = undefined };
 widget_animate_begin(W, flash) ->
     lager:debug("animate_begin"),
     Anim = {flash,0,10},
     erlang:start_timer(0, self(),{animate,W#widget.id,Anim}),
-    W#widget { animate = {flash,{offset,16#00ffffff}} }.
+    W#widget { animate = {color,{interpolate,0.0,16#00ffffff}}}.
 
 widget_animate_end(W, flash) ->
     lager:debug("animate_end"),
@@ -432,18 +509,30 @@ widget_animate_run(W, {flash,I,N}) ->
     Anim = {flash,I+1,N},
     erlang:start_timer(30, self(),{animate,W#widget.id,Anim}),
     case W#widget.animate of
-	{flash,{offset,Offset}} ->
-	    W#widget { animate = {flash,{offset,Offset - 16#000c0c0c}}};
+	{color,{interpolate,_V,AColor}} ->
+	    W#widget { animate = {color,{interpolate,(I+1)/N,AColor}}};
 	_ ->
 	    W
     end.
 
+callback_all(Wid, Subs, Env) ->
+    lists:foreach(
+      fun(#sub{id=ID,signal=Signal,callback=Callback}) ->
+	      if ID =:= Wid ->
+		      callback(Callback,Signal,Env);
+		 true ->
+		      ok
+	      end
+      end, Subs).
+
+%% note that event signals may loopback be time consuming,
+%% better to spawn them like this.
 callback(undefined,_Signal,_Env)  ->
     ok;
 callback(Cb,Signal,Env) when is_atom(Cb) ->
-    Cb:event(Signal, Env);
+    spawn(fun() -> Cb:event(Signal, Env) end);
 callback(Cb,Signal,Env) when is_function(Cb, 2) ->
-    Cb(Signal,Env).
+    spawn(fun() -> Cb(Signal,Env) end).
 
 window_create(Flags) ->
     W = widget_set([{type,window}|Flags], #widget{}),
@@ -516,12 +605,15 @@ widget_set([Option|Flags], W) ->
 			A =:= bottom;
 			A =:= center->
 	    widget_set(Flags, W#widget{valign=A});
-	{min,V} when is_number(V) ->
-	    widget_set(Flags, W#widget{min=V});
-	{max,V} when is_number(V) ->
-	    widget_set(Flags, W#widget{max=V});
+	{min,Min} when is_number(Min) ->
+	    V = clamp(W#widget.value, Min, W#widget.max),
+	    widget_set(Flags, W#widget{value=V,min=Min});
+	{max,Max} when is_number(Max) ->
+	    V = clamp(W#widget.value, W#widget.min, Max),
+	    widget_set(Flags, W#widget{value=V,max=Max});
 	{value,V} when is_number(V) ->
-	    widget_set(Flags, W#widget{value=V});
+	    V1 = clamp(V, W#widget.min, W#widget.max),
+	    widget_set(Flags, W#widget{value=V1});
 	{format,F} when is_list(F) ->
 	    widget_set(Flags, W#widget{format=F})
     end;
@@ -580,6 +672,51 @@ draw_widget(W, Win) ->
 	    epx_gc:draw(
 	      fun() ->
 		      draw_text_box(Win, W, W#widget.text)
+	      end);
+	slider ->
+	    epx_gc:draw(
+	      fun() ->
+		      epx_gc:set_fill_style(solid),
+		      epx_gc:set_fill_color(W#widget.color),
+		      epx:draw_rectangle(Win#widget.image,
+					 W#widget.x, W#widget.y,
+					 W#widget.width, W#widget.height),
+		      epx_gc:set_foreground_color(16#00000000),
+		      epx_gc:set_fill_style(none),
+		      epx:draw_rectangle(Win#widget.image,
+					 W#widget.x, W#widget.y,
+					 W#widget.width, W#widget.height),
+		      %% draw value bar
+		      #widget { min=Min, max=Max, value=Value} = W,
+		      if is_number(Min),is_number(Max),is_number(Value) ->
+			      Delta = abs(Max - Min),
+			      R = if Min < Max ->
+					  V = if Value < Min -> Min;
+						 Value > Max -> Max;
+						 true -> Value
+					      end,
+					  (V - Min)/Delta;
+				     Min > Max -> %% reversed axis
+					  V = if Value > Min -> Min;
+						 Value < Max -> Max;
+						 true -> Value
+					      end,
+					  (V - Max)/Delta;
+				     true ->
+					  0.5
+				  end,
+			      %% draw value marker
+			      Wm = 3,    %% marker width
+			      X = trunc(W#widget.x + R*((W#widget.width-Wm)-1)),
+			      Y = W#widget.y + 2,
+			      epx_gc:set_fill_style(solid),
+			      epx_gc:set_fill_color(16#00000000),
+			      epx:draw_rectangle(Win#widget.image,
+						 X, Y, Wm, W#widget.height-4);
+			 true ->
+			      ok
+			      
+		      end
 	      end);
 	value ->
 	    epx_gc:draw(
@@ -692,24 +829,69 @@ draw_text_box(Win, W, Text) ->
 set_color(W) ->
     Color0 = W#widget.color,
     Color = case W#widget.animate of
-		{flash,{offset,Offset}} ->
-		    add_color(Color0, Offset);
+		{color,{add,AColor}} ->
+		    color_add(Color0, AColor);
+		{color,{sub,AColor}} ->
+		    color_sub(Color0, AColor);
+		{color,{interpolate,V,AColor}} ->
+		    %% color from AColor -> W#widget.color
+		    color_interpolate(V, AColor, Color0);
 		_ -> Color0
 	    end,
     epx_gc:set_foreground_color(Color),
     epx_gc:set_fill_color(Color).
 
-add_color(C1, C2) ->
-    <<C3:32>> = add_color_bytes(<<C1:32>>, <<C2:32>>),
+color_add(C1, C2) ->
+    <<C3:32>> = color_add_argb(<<C1:32>>, <<C2:32>>),
     C3.
 
-add_color_bytes(<<A1,R1,G1,B1>>,<<A2,R2,G2,B2>>) ->
+color_sub(C1, C2) ->
+    <<C3:32>> = color_sub_argb(<<C1:32>>, <<C2:32>>),
+    C3.
+
+color_interpolate(V, C1, C2) ->
+    <<C3:32>> = color_interpolate_argb(V, <<C1:32>>, <<C2:32>>),
+    C3.
+
+color_add_argb(<<A1,R1,G1,B1>>,<<A2,R2,G2,B2>>) ->
     A = A1 + A2,
     R = R1 + R2,
     G = G1 + G2,
     B = B1 + B2,
     <<(clamp_byte(A)),(clamp_byte(R)),(clamp_byte(G)),(clamp_byte(B))>>.
+
+color_sub_argb(<<A1,R1,G1,B1>>,<<A2,R2,G2,B2>>) ->
+    A = A1 - A2,
+    R = R1 - R2,
+    G = G1 - G2,
+    B = B1 - B2,
+    <<(clamp_byte(A)),(clamp_byte(R)),(clamp_byte(G)),(clamp_byte(B))>>.
+
+color_interpolate_argb(V, <<A0,R0,G0,B0>>,<<A1,R1,G1,B1>>) 
+  when is_float(V), V >= 0.0, V =< 1.0 ->
+    A = trunc(A0 + V*(A1-A0)),
+    R = trunc(R0 + V*(R1-R0)),
+    G = trunc(R1 + V*(G1-G0)),
+    B = trunc(B1 + V*(B1-B0)),
+    <<(clamp_byte(A)),(clamp_byte(R)),(clamp_byte(G)),(clamp_byte(B))>>.
     
 clamp_byte(A) when A > 255 -> 255;
 clamp_byte(A) when A < 0  -> 0;
 clamp_byte(A) -> A.
+
+%% clamp numbers
+clamp(V,Min,Max) when is_number(V),is_number(Min),is_number(Max) ->
+    if Min < Max -> min(max(V,Min), Max);
+       Min > Max -> max(min(V,Min), Max);
+       Min == Max -> Min
+    end;
+clamp(undefined,Min,Max) ->
+    if is_number(Min) -> Min;
+       is_number(Max) -> Max;
+       true -> undefined
+    end;
+clamp(V,Min,undefined) when is_number(Min), V < Min -> Min;
+clamp(V,undefined,Max) when is_number(Max), V > Max -> Max;
+clamp(V,_,_) -> V.
+
+

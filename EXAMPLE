@@ -17,7 +17,7 @@ hex_epx:init_event(in, [{id,b1},{type,button},{x,100},{y,100},{width,64},{height
 hex_epx:init_event(in, [{id,b2},{type,button},{x,165},{y,100},{width,64},{height,64},{fill,solid},{color,16#ff00ff00},{font,[{name,"Arial"},{size,12}]},{text,"Push"}]).
 
 %% VALUES
-hex_epx:init_event(out, [{id,v1},{type,value},{x,200},{y,10},{width,64},{height,32},{fill,solid},{color,16#ff00ff00},{font,[{name,"Arial"},{size,12}]},{value,0},{format,"~4..0w"}]).
+
 
 hex_epx:init_event(out, [{id,v2},{type,value},{x,200},{y,43},{width,64},{height,32},{fill,solid},{color,16#ff00ffff},{font,[{name,"Arial"},{size,12}]},{value,0},{format,"~4.16.0B"}]).
 
@@ -28,6 +28,33 @@ hex_epx:init_event(out, [{id,i2},{type,image},{x,60},{y,1},{image,"/Users/tony/P
 
 hex_epx:init_event(out, [{id,i3},{type,image},{x,120},{y,1},{image,"/Users/tony/Pictures/Test/solros.jpg"}]).
 
+%% SMALL DEMO
+hex_epx:init_event(out, [{id,v1},{type,value},{x,200},{y,10},{width,64},{height,32},{fill,solid},{color,16#ff00ff00},{font,[{name,"Arial"},{size,12}]},{value,0},{format,"~4..0w"}]).
+
+%% SLIDER
+hex_epx:init_event(in, [{id,s1},{type,slider},{x,5},{y,200},{width,300},{height,32},{color,16#ff006600},{min,0},{max,1024}]).
+
+%% CONNECT SLIDER and VALUE1
+hex_epx:add_event([{id,s1}], slider, fun(_,Env) -> hex_epx:output([{id,v1}], Env) end).
 
 
-hex_epx:output([{id,red}], [{x,120},{y,110}]).
+%% BUTTON DEMO
+%%   Spacing = (320 - (4*64 + 3*4))/2  = 26
+%%   X1 = 26
+%%   X2 = X1 + 64 + 4  = 94
+%%   X3 = X2 + 64 + 4  = 162
+%%   X4 = X3 + 64 + 4  = 230
+%%
+hex_epx:init_event(in, [{id,b1},{type,button},{x,26},{y,10},{width,64},{height,64},{fill,solid},{color,16#ffff0000},{font,[{name,"Arial"},{size,12}]},{text,"F1"}]).
+hex_epx:init_event(in, [{id,b2},{type,button},{x,94},{y,10},{width,64},{height,64},{fill,solid},{color,16#ffff0000},{font,[{name,"Arial"},{size,12}]},{text,"F2"}]).
+hex_epx:init_event(in, [{id,b3},{type,button},{x,162},{y,10},{width,64},{height,64},{fill,solid},{color,16#ffff0000},{font,[{name,"Arial"},{size,12}]},{text,"F3"}]).
+hex_epx:init_event(in, [{id,b4},{type,button},{x,230},{y,10},{width,64},{height,64},{fill,solid},{color,16#ffff0000},{font,[{name,"Arial"},{size,12}]},{text,"F4"}]).
+
+hex_epx:init_event(in, [{id,b5},{type,button},{x,26},{y,78},{width,64},{height,64},{fill,solid},{color,16#ff00ff00},{font,[{name,"Arial"},{size,12}]},{text,"F5"}]).
+hex_epx:init_event(in, [{id,b6},{type,button},{x,94},{y,78},{width,64},{height,64},{fill,solid},{color,16#ff00ff00},{font,[{name,"Arial"},{size,12}]},{text,"F6"}]).
+hex_epx:init_event(in, [{id,b7},{type,button},{x,162},{y,78},{width,64},{height,64},{fill,solid},{color,16#ff0000ff},{font,[{name,"Arial"},{size,12}]},{text,"F7"}]).
+hex_epx:init_event(in, [{id,b8},{type,button},{x,230},{y,78},{width,64},{height,64},{fill,solid},{color,16#ff0000ff},{font,[{name,"Arial"},{size,12}]},{text,"F8"}]).
+
+hex_epx:init_event(out, [{id,amp},{type,value},{x,26},{y,150},{width,136},{height,48},{font,[{name,"Arial"},{size,40}]},{format,"~w A"}]).
+
+hex_epx:init_event(out, [{id,volt},{type,value},{x,162},{y,150},{width,136},{height,48},{font,[{name,"Arial"},{size,40}]},{format,"~w V"}]).
