@@ -55,6 +55,6 @@ hex_epx:init_event(in, [{id,b6},{type,button},{x,94},{y,78},{width,64},{height,6
 hex_epx:init_event(in, [{id,b7},{type,button},{x,162},{y,78},{width,64},{height,64},{fill,solid},{color,16#ff0000ff},{font,[{name,"Arial"},{size,12}]},{text,"F7"}]).
 hex_epx:init_event(in, [{id,b8},{type,button},{x,230},{y,78},{width,64},{height,64},{fill,solid},{color,16#ff0000ff},{font,[{name,"Arial"},{size,12}]},{text,"F8"}]).
 
-hex_epx:init_event(out, [{id,amp},{type,value},{x,26},{y,150},{width,136},{height,48},{font,[{name,"Arial"},{size,40}]},{format,"~w A"}]).
+hex_epx:init_event(out, [{id,amp},{type,value},{x,26},{y,150},{width,132},{height,48},{font,[{name,"Arial"},{size,40}]},{format,"~w A"}]).
 
-hex_epx:init_event(out, [{id,volt},{type,value},{x,162},{y,150},{width,136},{height,48},{font,[{name,"Arial"},{size,40}]},{format,"~w V"}]).
+hex_epx:init_event(out, [{id,volt},{type,value},{x,162},{y,150},{width,132},{height,48},{font,[{name,"Arial"},{size,40}]},{format,"~w V"}]).
