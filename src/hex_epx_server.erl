@@ -41,6 +41,9 @@
 
 -define(SERVER, ?MODULE).
 
+-define(DEFAULT_WIDTH, 320).
+-define(DEFAULT_HEIGHT, 240).
+
 -record(widget,
 	{
 	  id,        %% named widget (outputs)
@@ -130,10 +133,30 @@ start_link() ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([]) ->
+init(Args) ->
+    Backend = epx_backend:default(),
+    Name = epx:backend_info(Backend, name),
+    Width = 
+	if Name =:= "fb" ->
+		case proplists:get_value(width, Args) of
+		    undefined -> epx:backend_info(Backend, width);
+		    W0 -> W0
+		end;
+	   true ->
+		proplists:get_value(width, Args, ?DEFAULT_WIDTH)
+	end,
+    Height =
+	if Name =:= "fb" ->
+		case proplists:get_value(height, Args) of
+		    undefined -> epx:backend_info(Backend, height);
+		    H0 -> H0
+		end;
+	   true ->
+		proplists:get_value(height, Args, ?DEFAULT_HEIGHT)
+	end,
     Default = window_create([{id,default},
 			     {x,50},{y,50},
-			     {width,320},{height,240},
+			     {width,Width},{height,Height},
 			     {events, [key_press,key_release,
 				       button_press, button_release,
 				       %% configure,resize,focus,
