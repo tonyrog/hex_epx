@@ -56,14 +56,14 @@
 	  height = 32 :: non_neg_integer(),
 	  text = "",
 	  image   :: epx:epx_pixmap(),
-	  color = 16#ffff0000,  %% red
+	  color = 16#ff000000,
 	  fill   = none :: epx:epx_fill_style(),
 	  events = []   :: epx:epx_window_event_flags(),
 	  halign  = center :: top|bottom|center,
 	  valign  = center :: left|right|center,
 	  min     :: number(),          %% type=value|slider
 	  max     :: number(),          %% type=value|slider
-	  format  :: string(),          %% io:format format
+	  format = "~w" :: string(),   %% io:format format
 	  value =0 :: number(),         %% type=value|slider
 	  animate,                      %% animation state.
 	  font    :: epx:epx_font(),    %% type=text|button|value
@@ -74,12 +74,14 @@
 -record(sub,
 	{
 	  ref :: reference(),
+	  mon :: reference(),
 	  id  :: term(),
 	  callback :: atom() | function(),
 	  signal :: term()
 	}).
 	  
 -record(state, {
+	  joined :: boolean(),       %% joined hex server
 	  redraw_timer = undefined,
 	  active = [] :: [term()],   %% active widgets pressed
 	  subs = [] :: [#sub{}],
@@ -88,7 +90,7 @@
 	 }).
 
 add_event(Flags, Signal, Cb) ->
-    gen_server:call(?MODULE, {add_event, Flags, Signal, Cb}).
+    gen_server:call(?MODULE, {add_event, self(), Flags, Signal, Cb}).
 
 del_event(Ref) ->
     gen_server:call(?MODULE, {del_event, Ref}).
@@ -134,6 +136,7 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init(Args) ->
+    Joined = hex:auto_join(hex_epx),
     Backend = epx_backend:default(),
     Name = epx:backend_info(Backend, name),
     Width = 
@@ -164,7 +167,8 @@ init(Args) ->
 				       button,wheel]},
 			     {color, 16#ffffffff}]),
     self() ! refresh,
-    {ok, #state{ windows = dict:from_list([{default,Default}]),
+    {ok, #state{ joined = Joined,
+		 windows = dict:from_list([{default,Default}]),
 		 widgets = dict:new() }}.
 
 %%--------------------------------------------------------------------
@@ -181,13 +185,14 @@ init(Args) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({add_event,Flags,Signal, Cb}, _From, State) ->
+handle_call({add_event,Pid,Flags,Signal, Cb}, _From, State) ->
     case lists:keyfind(id, 1, Flags) of
 	false ->
 	    {reply,{error,missing_id},State};
 	{id,ID} ->
 	    Ref = make_ref(),
-	    Sub = #sub{id=ID,ref=Ref,signal=Signal,callback=Cb},
+	    Mon = erlang:monitor(process, Pid),
+	    Sub = #sub{id=ID,ref=Ref,mon=Mon,signal=Signal,callback=Cb},
 	    Subs = [Sub|State#state.subs],
 	    {reply, {ok,Ref}, State#state { subs = Subs}}
     end;
@@ -195,7 +200,8 @@ handle_call({del_event,Ref}, _From, State) ->
     case lists:keytake(Ref, #sub.ref, State#state.subs) of
 	false ->
 	    {reply, {error, not_found}, State};
-	{value, _W, Subs} ->
+	{value, Sub, Subs} ->
+	    erlang:demonitor(Sub#sub.mon, [flush]),
 	    {reply, ok, State#state { subs=Subs} }
     end;
 handle_call({output_event,Flags,Env}, _From, State) ->    
@@ -296,6 +302,15 @@ handle_info({timeout,TRef,redraw}, State)
     lager:debug("redraw"),
     State1 = redraw_state(State#state { redraw_timer=undefined}),
     {noreply, State1};
+
+handle_info({'DOWN',Mon,process,_Pid,_Reason}, State) ->
+    case lists:keytake(Mon, #sub.mon, State#state.subs) of
+	false ->
+	    {noreply, State};
+	{value, _Sub, Subs} ->
+	    {noreply, State#state { subs=Subs} }
+    end;
+
 handle_info(_Info, State) ->
     lager:debug("info = %p", [_Info]),
     {noreply, State}.

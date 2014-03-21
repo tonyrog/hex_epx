@@ -60,7 +60,42 @@ init_event(Dir, Flags) ->
 %%
 %% validate_event(in | out, Flags::[{atom(),term()}])
 %%
-validate_event(_Dir, _Flags) ->
-    %% check types and values here
-    ok.
+validate_event(_Dir, Flags) ->
+    hex:validate_flags(Flags, spec()).
 
+spec() ->
+    [{type,mandatory,
+      {alt,[{const,button},{const,slider},{const,value},
+	    {const,rectangle},{const,ellipse},{const,line},
+	    {const,image},{const,text}]}, undefined},
+     {id,mandatory,atom,undefined},
+     {x,mandatory,integer,0},
+     {y,mandatory,integer,0},
+     {width,mandatory,unsigned,32},
+     {height,mandatory,unsigned,32},
+     {text,optional,string,""},
+     {image,optional,{alt,[string,{record,epx_pixmap}]},undefined},
+     {font,optional,
+      {alt,[{list,{alt,[{tuple,[{const,name},string]},
+			{tuple,[{const,resolution},integer]},
+			{tuple,[{const,weight},
+				{alt,[{const,none},{const,medium},
+				      {const,bold},{const,demibold}]}]},
+			{tuple,[{const,slant},
+				{alt,[{const,roman},
+				      {const,italic},
+				      {const,oblique},
+				      {const,reverse_italic},
+				      {const,reverse_oblique},
+				      {const,other}]}]},
+			{tuple,[{const,size},integer]}]}},
+	    {record,epx_font}]}, undefined},
+     {color,optional,unsigned32,16#ff000000},
+     {fill,optional,{alt,[{const,solid},{const,blend},{const,none}]}, none},
+     {halign,optional,{alt,[{const,left},{const,right},{const,center}]},center},
+     {valign,optional,{alt,[{const,top},{const,bottom},{const,center}]},center},
+     {min,optional,number,undefined},
+     {max,optional,number,undefined},
+     {value,optional,number,0},
+     {format,optional,string,"~w"}
+    ].
