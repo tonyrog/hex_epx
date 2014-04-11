@@ -28,7 +28,7 @@
 
 %% API
 -export([start_link/0, stop/0]).
--export([add_event/3, del_event/1]).
+-export([add_event/3, mod_event/2, del_event/1]).
 -export([init_event/2, output_event/2]).
 
 
@@ -46,7 +46,7 @@
 
 -record(widget,
 	{
-	  id,        %% named widget (outputs)
+	  id,        %% named widgets
 	  type,      %% button,rectangle,slider ...
 	  window = default,  %% id of window (if type != window)
 	  state  = normal,   %% or active,selected ..
@@ -85,6 +85,7 @@
 	  redraw_timer = undefined,
 	  active = [] :: [term()],   %% active widgets pressed
 	  subs = [] :: [#sub{}],
+	  default_font :: epx:epx_font(),
 	  windows :: dict(),  %% term => #widget{}
 	  widgets :: dict()   %% term => #widget{}
 	 }).
@@ -100,6 +101,9 @@ output_event(Flags, Env) ->
 
 init_event(Dir, Flags) ->
     gen_server:call(?MODULE, {init_event, Dir, Flags}).
+
+mod_event(Dir, Flags) ->
+    gen_server:call(?MODULE, {mod_event, Dir, Flags}).
 
 stop() ->
     gen_server:call(?MODULE, stop).
@@ -157,6 +161,11 @@ init(Args) ->
 	   true ->
 		proplists:get_value(height, Args, ?DEFAULT_HEIGHT)
 	end,
+    Font = %% load a default font
+	case epx_font:match([{name,"Arial"},{size,12}]) of
+	    false -> undefined;
+	    {ok,F} -> F
+	end,
     Default = window_create([{id,default},
 			     {x,50},{y,50},
 			     {width,Width},{height,Height},
@@ -168,8 +177,10 @@ init(Args) ->
 			     {color, 16#ffffffff}]),
     self() ! refresh,
     {ok, #state{ joined = Joined,
+		 default_font = Font,
 		 windows = dict:from_list([{default,Default}]),
-		 widgets = dict:new() }}.
+		 widgets = dict:new()
+	       }}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -185,14 +196,13 @@ init(Args) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({add_event,Pid,Flags,Signal, Cb}, _From, State) ->
+handle_call({add_event,Pid,Flags,Signal,Cb}, _From, State) ->
     case lists:keyfind(id, 1, Flags) of
 	false ->
 	    {reply,{error,missing_id},State};
 	{id,ID} ->
-	    Ref = make_ref(),
-	    Mon = erlang:monitor(process, Pid),
-	    Sub = #sub{id=ID,ref=Ref,mon=Mon,signal=Signal,callback=Cb},
+	    Ref = erlang:monitor(process, Pid),
+	    Sub = #sub{id=ID,ref=Ref,signal=Signal,callback=Cb},
 	    Subs = [Sub|State#state.subs],
 	    {reply, {ok,Ref}, State#state { subs = Subs}}
     end;
@@ -201,7 +211,7 @@ handle_call({del_event,Ref}, _From, State) ->
 	false ->
 	    {reply, {error, not_found}, State};
 	{value, Sub, Subs} ->
-	    erlang:demonitor(Sub#sub.mon, [flush]),
+	    erlang:demonitor(Sub#sub.ref, [flush]),
 	    {reply, ok, State#state { subs=Subs} }
     end;
 handle_call({output_event,Flags,Env}, _From, State) ->    
@@ -231,7 +241,8 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
 	{_,ID} ->
 	    case dict:find(ID,State#state.widgets) of
 		error ->
-		    try widget_create(Flags) of
+		    W0 = #widget{font=State#state.default_font},
+		    try widget_set(Flags,W0) of
 			W ->
 			    Ws1 = dict:store(ID,W,State#state.widgets),
 			    self() ! refresh,
@@ -244,9 +255,24 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
 		    {reply, {error, ealready}, State}
 	    end
     end;
+handle_call({mod_event,_Dir,Flags}, _From, State) ->
+    case lookup_widget(Flags, State) of
+	E={error,_} ->
+	    {reply,E, State};
+	{ok,W} ->
+	    try widget_set(Flags, W) of
+		W1 ->
+		    Ws1 = dict:store(W#widget.id,W1,State#state.widgets),
+		    self() ! refresh,
+		    {reply, ok, State#state{widgets=Ws1}}
+	    catch
+		error:Reason ->
+		    {reply, {error,Reason}, State}
+	    end
+    end;
 handle_call(_Request, _From, State) ->
-    Reply = ok,
-    {reply, Reply, State}.
+    lager:debug("unknown call ~p", [_Request]),
+    {reply, {error,bad_call}, State}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -303,14 +329,13 @@ handle_info({timeout,TRef,redraw}, State)
     State1 = redraw_state(State#state { redraw_timer=undefined}),
     {noreply, State1};
 
-handle_info({'DOWN',Mon,process,_Pid,_Reason}, State) ->
-    case lists:keytake(Mon, #sub.mon, State#state.subs) of
+handle_info({'DOWN',Ref,process,_Pid,_Reason}, State) ->
+    case lists:keytake(Ref, #sub.ref, State#state.subs) of
 	false ->
 	    {noreply, State};
 	{value, _Sub, Subs} ->
 	    {noreply, State#state { subs=Subs} }
     end;
-
 handle_info(_Info, State) ->
     lager:debug("info = %p", [_Info]),
     {noreply, State}.
@@ -344,6 +369,20 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+lookup_widget(Flags, State) ->
+    case lists:keyfind(id, 1, Flags) of
+	false ->
+	    {error,missing_id};
+	{id,ID} ->
+	    case dict:find(ID, State#state.widgets) of
+		error ->
+		    {error,enoent};
+		{ok,W} ->
+		    {ok,W}
+	    end
+    end.
+
 
 handle_event({key_press,_Sym,_Mod,_Code},_W,State) ->
     {noreply, State};
@@ -583,8 +622,6 @@ window_create(Flags) ->
     Px = epx:pixmap_create(W#widget.width, W#widget.height),
     W#widget { win=Win, image=Px, backing=Backing }.
 
-widget_create(Flags) ->
-    widget_set(Flags, #widget{}).
 
 widget_set([Option|Flags], W) ->
     case Option of
