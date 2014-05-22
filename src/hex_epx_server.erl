@@ -86,8 +86,8 @@
 	  active = [] :: [term()],   %% active widgets pressed
 	  subs = [] :: [#sub{}],
 	  default_font :: epx:epx_font(),
-	  windows :: dict(),  %% term => #widget{}
-	  widgets :: dict()   %% term => #widget{}
+	  windows :: dict:dict(),  %% term => #widget{}
+	  widgets :: dict:dict()   %% term => #widget{}
 	 }).
 
 add_event(Flags, Signal, Cb) ->
@@ -690,7 +690,10 @@ widget_set([Option|Flags], W) ->
 	    V1 = clamp(V, W#widget.min, W#widget.max),
 	    widget_set(Flags, W#widget{value=V1});
 	{format,F} when is_list(F) ->
-	    widget_set(Flags, W#widget{format=F})
+	    widget_set(Flags, W#widget{format=F});
+	_ ->
+	    lager:debug("option ignored ~p", [Option]),
+	    widget_set(Flags, W)
     end;
 widget_set([], W) ->
     W.
