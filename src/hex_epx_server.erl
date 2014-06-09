@@ -742,7 +742,7 @@ unmap_window(Win) ->
 
 
 %%
-%% TODO: slider/menu border/offset/scale/background
+%% TODO: menu border/offset/scale/background
 %%
 draw_widget(W, Win) ->
     case W#widget.type of
@@ -863,13 +863,7 @@ draw_widget(W, Win) ->
 	text ->
 	    epx_gc:draw(
 	      fun() ->
-		      set_color(W),
-		      Font = W#widget.font,
-		      epx_gc:set_font(W#widget.font),
-		      epx:draw_string(Win#widget.image,
-				      W#widget.x, 
-				      W#widget.y + epx:font_info(Font, ascent),
-				      W#widget.text)
+		      draw_text_box(Win, W, W#widget.text)
 	      end);
 	Type ->
 	    lager:debug("bad widget type ~p", [Type])
