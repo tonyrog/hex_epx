@@ -40,6 +40,7 @@
 -include_lib("epx/include/epx_image.hrl").
 
 -define(SERVER, ?MODULE).
+-define(DICT_T, term()).  %% dict:dict()
 
 -define(DEFAULT_WIDTH, 320).
 -define(DEFAULT_HEIGHT, 240).
@@ -86,8 +87,8 @@
 	  active = [] :: [term()],   %% active widgets pressed
 	  subs = [] :: [#sub{}],
 	  default_font :: epx:epx_font(),
-	  windows :: dict:dict(),  %% term => #widget{}
-	  widgets :: dict:dict()   %% term => #widget{}
+	  windows :: ?DICT_T,  %% term => #widget{}
+	  widgets :: ?DICT_T   %% term => #widget{}
 	 }).
 
 add_event(Flags, Signal, Cb) ->
