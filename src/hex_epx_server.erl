@@ -223,7 +223,7 @@ handle_call({output_event,Flags,Env}, _From, State) ->
 		error ->
 		    {reply,{error,enoent},State};
 		{ok,W} ->
-		    try widget_set(Env, W) of
+		    try widget_set(Flags++Env, W) of
 			W1 ->
 			    Ws1 = dict:store(ID,W1,State#state.widgets),
 			    self() ! refresh,
