@@ -41,16 +41,19 @@
 
 -define(SERVER, ?MODULE).
 -define(DICT_T, term()).  %% dict:dict()
+-define(SETS_T, term()).  %% sets:set()
 
+%% FIXME: configure this
 -define(DEFAULT_WIDTH, 320).
 -define(DEFAULT_HEIGHT, 240).
 
 -record(widget,
 	{
-	  id,        %% named widgets
-	  type,      %% button,rectangle,slider ...
-	  window = default,  %% id of window (if type != window)
-	  state  = normal,   %% or active,selected ..
+	  id,                %% named widgets
+	  type,              %% button,rectangle,slider ...
+	  window = screen,   %% id of base window (if type != window)
+	  state  = normal,   %% or active,selected,closed ..
+	  static = false,    %% object may not be deleted
 	  x = 0   :: integer(),
 	  y = 0   :: integer(),
 	  width  = 32 :: non_neg_integer(),
@@ -64,7 +67,7 @@
 	  valign  = center :: left|right|center,
 	  min     :: number(),          %% type=value|slider
 	  max     :: number(),          %% type=value|slider
-	  format = "~w" :: string(),   %% io:format format
+	  format = "~w" :: string(),    %% io_lib:format format
 	  value =0 :: number(),         %% type=value|slider
 	  animate,                      %% animation state.
 	  font    :: epx:epx_font(),    %% type=text|button|value
@@ -87,7 +90,7 @@
 	  active = [] :: [term()],   %% active widgets pressed
 	  subs = [] :: [#sub{}],
 	  default_font :: epx:epx_font(),
-	  windows :: ?DICT_T,  %% term => #widget{}
+	  wset    :: ?SETS_T,  %% set of window id
 	  widgets :: ?DICT_T   %% term => #widget{}
 	 }).
 
@@ -144,7 +147,7 @@ init(Args) ->
     Joined = hex:auto_join(hex_epx),
     Backend = epx_backend:default(),
     Name = epx:backend_info(Backend, name),
-    Width = 
+    Width =
 	if Name =:= "fb" ->
 		case proplists:get_value(width, Args) of
 		    undefined -> epx:backend_info(Backend, width);
@@ -167,7 +170,8 @@ init(Args) ->
 	    false -> undefined;
 	    {ok,F} -> F
 	end,
-    Default = window_create([{id,default},
+    Default = window_create([{id,screen},
+			     {static,true},
 			     {x,50},{y,50},
 			     {width,Width},{height,Height},
 			     {events, [key_press,key_release,
@@ -179,8 +183,8 @@ init(Args) ->
     self() ! refresh,
     {ok, #state{ joined = Joined,
 		 default_font = Font,
-		 windows = dict:from_list([{default,Default}]),
-		 widgets = dict:new()
+		 widgets = dict:from_list([{Default#widget.id,Default}]),
+		 wset = sets:from_list([Default#widget.id])
 	       }}.
 
 %%--------------------------------------------------------------------
@@ -205,7 +209,7 @@ handle_call({add_event,Pid,Flags,Signal,Cb}, _From, State) ->
 	    Ref = erlang:monitor(process, Pid),
 	    Sub = #sub{id=ID,ref=Ref,signal=Signal,callback=Cb},
 	    Subs = [Sub|State#state.subs],
-	    {reply, {ok,Ref}, State#state { subs = Subs}}
+	    {reply, {ok,Ref}, State#state { subs=Subs}}
     end;
 handle_call({del_event,Ref}, _From, State) ->
     case lists:keytake(Ref, #sub.ref, State#state.subs) of
@@ -215,7 +219,7 @@ handle_call({del_event,Ref}, _From, State) ->
 	    erlang:demonitor(Sub#sub.ref, [flush]),
 	    {reply, ok, State#state { subs=Subs} }
     end;
-handle_call({output_event,Flags,Env}, _From, State) ->    
+handle_call({output_event,Flags,Env}, _From, State) ->
     case lists:keyfind(id, 1, Flags) of
 	false ->
 	    {reply,{error,missing_id},State};
@@ -239,21 +243,34 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
     case lists:keyfind(id, 1, Flags) of
 	false ->
 	    {reply,{error,missing_id},State};
-	{_,ID} ->
+	{id,ID} ->
 	    case dict:find(ID,State#state.widgets) of
 		error ->
 		    W0 = #widget{font=State#state.default_font},
 		    try widget_set(Flags,W0) of
-			W ->
-			    Ws1 = dict:store(ID,W,State#state.widgets),
+			W1 ->
+			    %% fixme: handle extra windows
+			    Ws1 = dict:store(ID,W1,State#state.widgets),
 			    self() ! refresh,
 			    {reply, ok, State#state{widgets=Ws1}}
 		    catch
 			error:Reason ->
+			    io:format("widget ~p not created ~p\n",
+				      [ID, Reason]),
 			    {reply, {error,Reason}, State}
 		    end;
-		{ok,_W} -> %% overwrite? merge?
-		    {reply, {error, ealready}, State}
+		{ok,W} ->
+		    try widget_set(Flags,W) of
+			W1 ->
+			    Ws1 = dict:store(ID,W1,State#state.widgets),
+			    self() ! refresh,
+			    {reply, ok, State#state{widgets=Ws1}}
+		    catch
+			error:Reason ->
+			    io:format("widget ~p not updated ~p\n",
+				      [W#widget.id, Reason]),
+			    {reply, {error,Reason}, State}
+		    end
 	    end
     end;
 handle_call({mod_event,_Dir,Flags}, _From, State) ->
@@ -300,11 +317,13 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({epx_event,Win,Event}, State) ->
     lager:debug("event: ~p", [Event]),
-    case dict:fold(fun(_ID,W,Acc) ->
-			   if W#widget.win =:= Win -> [W|Acc];
-			      true -> Acc
-			   end
-		   end, [], State#state.windows) of
+    %% find window widget (fixme: add reverse map at some point) ?
+    case fold_windows(
+	   fun(W,Acc) ->
+		   if W#widget.win =:= Win -> [W|Acc];
+		      true -> Acc
+		   end
+	   end, [], State) of
 	[] ->
 	    lager:error("window not found"),
 	    {noreply, State};
@@ -353,7 +372,7 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, State) ->
-    each_widget(fun unmap_window/1, State#state.windows),
+    each_window(fun unmap_window/1, State),
     ok.
 
 %%--------------------------------------------------------------------
@@ -469,13 +488,14 @@ handle_event(focus_in,_Window,State) ->
     {noreply, State};
 handle_event(focus_out,_Window,State) ->
     {noreply, State};
-handle_event(close,Window,State) ->
-    if Window#widget.id =:= default ->
+handle_event(Event=close,Window,State) ->
+    if Window#widget.static =:= true -> %% may not be deleted
 	    {noreply, State};
        true ->
 	    unmap_window(Window),
-	    Windows1 = dict:erase(Window#widget.id, State#state.windows),
-	    {noreply, State#state { windows = Windows1 }}
+	    Window1 = widget_event(Event, Window, Window, State),
+	    State1 = delete_widget(Window, State),
+	    {noreply, State1}
     end;
 handle_event(_Event,_W,State) ->
     lager:error("unknown event: ~p", [_Event]),
@@ -545,6 +565,9 @@ widget_event({motion,_Button,Where}, W, _Window, State) ->
 	_ ->
 	    W
     end;
+widget_event(close, W, _Window, State) ->
+    callback_all(W#widget.id,State#state.subs,[{closed,true}]),
+    W#widget { state=closed };
 widget_event(_Event, W, _Window, _State) ->
     W.
 
@@ -603,7 +626,7 @@ callback_all(Wid, Subs, Env) ->
 	      end
       end, Subs).
 
-%% note that event signals may loopback be time consuming,
+%% note that event signals may loopback and be time consuming,
 %% better to spawn them like this.
 callback(undefined,_Signal,_Env)  ->
     ok;
@@ -630,6 +653,8 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{type=Type});
 	{id,ID} when is_atom(ID) -> 
 	    widget_set(Flags, W#widget{id=ID});
+	{static,Bool} when is_boolean(Bool) -> 
+	    widget_set(Flags, W#widget{static=Bool});
 	{x,X} when is_integer(X) ->
 	    widget_set(Flags, W#widget{x=X});
 	{y,Y} when is_integer(Y) ->
@@ -708,22 +733,44 @@ redraw_schedule(State) ->
     end.
 
 redraw_state(State) ->
-    each_widget(fun clear_window/1, State#state.windows),
+    each_window(fun clear_window/1, State),
     each_widget(fun(W) ->
-			case dict:find(W#widget.window, State#state.windows) of
+			case dict:find(W#widget.window, State#state.widgets) of
 			   error ->
 			       lager:error("missing window id=~w\n",
 					   [W#widget.window]);
 			    {ok,Win} ->
 				draw_widget(W, Win)
 			end
-		end, State#state.widgets),
-    each_widget(fun update_window/1, State#state.windows),
+		end, State),
+    each_window(fun update_window/1, State),
     State.
 
+delete_widget(#widget{id=Wid,type=Type}, State) ->
+    Widgets1 = dict:erase(Wid, State#state.widgets),
+    Wset1 = if Type =:= window ->
+		    sets:del_delement(Wid,State#state.wset);
+	       true ->
+		    State#state.wset
+	    end,
+    State#state { widgets=Widgets1, wset=Wset1 }.
+    
 
-each_widget(Fun, Ws) ->
-    dict:fold(fun(_K,W,_) -> Fun(W) end, [], Ws),
+fold_widgets(Fun, Acc, State) ->
+    dict:fold(fun(_K,W,Acc) -> Fun(W,Acc) end, Acc, State#state.widgets).
+
+each_widget(Fun, State) ->
+    fold_widgets(fun(W,_) -> Fun(W) end, ok, State),
+    ok.
+
+fold_windows(Fun, Acc, State) ->
+    sets:fold(fun(Wid,Acc) ->
+		      W = dict:fetch(Wid, State#state.widgets),
+		      Fun(W, Acc)
+	      end, Acc, State#state.wset).
+
+each_window(Fun, State) ->
+    fold_windows(fun(Win,_) -> Fun(Win) end, ok, State),
     ok.
 
 
@@ -747,6 +794,10 @@ unmap_window(Win) ->
 %%
 draw_widget(W, Win) ->
     case W#widget.type of
+	window ->
+	    %% do not draw (yet), we may use this
+	    %% to draw embedded windows in the future
+	    ok;
 	button ->
 	    epx_gc:draw(
 	      fun() ->

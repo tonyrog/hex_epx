@@ -79,6 +79,7 @@ event_spec(_Dir) ->
     [{leaf,type, 
       [{type, enumeration,
 	[{enum,button,[]},
+	 {enum,window,[]},
 	 {enum,slider,[]},
 	 {enum,value,[]},
 	 {enum,rectangle,[]},
@@ -92,6 +93,11 @@ event_spec(_Dir) ->
      {leaf,id,
       [{type,string,[]},
        {mandatory, true, []}
+      ]},
+
+     {leaf,static,
+      [{type,boolean,[]},
+       {default,false,[]}
       ]},
       
      {leaf,x,[{type,int32,[]},{default,0,[]}]},
