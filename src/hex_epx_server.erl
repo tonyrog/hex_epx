@@ -494,7 +494,7 @@ handle_event(Event=close,Window,State) ->
        true ->
 	    unmap_window(Window),
 	    Window1 = widget_event(Event, Window, Window, State),
-	    State1 = delete_widget(Window, State),
+	    State1 = delete_widget(Window1, State),
 	    {noreply, State1}
     end;
 handle_event(_Event,_W,State) ->
@@ -757,16 +757,16 @@ delete_widget(#widget{id=Wid,type=Type}, State) ->
     
 
 fold_widgets(Fun, Acc, State) ->
-    dict:fold(fun(_K,W,Acc) -> Fun(W,Acc) end, Acc, State#state.widgets).
+    dict:fold(fun(_K,W,Acc1) -> Fun(W,Acc1) end, Acc, State#state.widgets).
 
 each_widget(Fun, State) ->
     fold_widgets(fun(W,_) -> Fun(W) end, ok, State),
     ok.
 
 fold_windows(Fun, Acc, State) ->
-    sets:fold(fun(Wid,Acc) ->
+    sets:fold(fun(Wid,Acc1) ->
 		      W = dict:fetch(Wid, State#state.widgets),
-		      Fun(W, Acc)
+		      Fun(W, Acc1)
 	      end, Acc, State#state.wset).
 
 each_window(Fun, State) ->
