@@ -666,10 +666,12 @@ widget_set([Option|Flags], W) ->
 	{text,Text} when is_list(Text) ->
 	    widget_set(Flags, W#widget{text=Text});
 	{image,File} when is_list(File) ->
-	    case epx_image:load(File) of
+	    case epx_image:load(hex:text_expand(File, [])) of
 		{ok,Image} ->
+		    lager:debug("load image file ~s.",[File]),
 		    case Image#epx_image.pixmaps of
 			[Pixmap] ->
+			    lager:debug("pixmap created ~s.",[File]),
 			    widget_set(Flags, W#widget{image=Pixmap});
 			_ ->
 			    lager:error("no pixmap found in ~s",[File]),
@@ -872,11 +874,7 @@ draw_widget(W, Win) ->
 	rectangle ->
 	    epx_gc:draw(
 	      fun() ->
-		      epx_gc:set_fill_style(W#widget.fill),
-		      set_color(W),
-		      epx:draw_rectangle(Win#widget.image, 
-					 W#widget.x, W#widget.y,
-					 W#widget.width, W#widget.height)
+		      draw_background(Win, W)
 	      end);
 	ellipse ->
 	    epx_gc:draw(
@@ -899,18 +897,7 @@ draw_widget(W, Win) ->
 	image ->
 	    epx_gc:draw(
 	      fun() ->
-		      if is_record(W#widget.image, epx_pixmap) ->
-			      Width = epx:pixmap_info(W#widget.image,width),
-			      Height = epx:pixmap_info(W#widget.image,height),
-			      epx:pixmap_copy_area(W#widget.image,
-						   Win#widget.image,
-						   0, 0,
-						   W#widget.x, W#widget.y,
-						   Width, Height,
-						   [solid]);
-			 true ->
-			      ok
-		      end
+		      draw_background(Win, W)
 	      end);
 	text ->
 	    epx_gc:draw(
@@ -923,11 +910,7 @@ draw_widget(W, Win) ->
 
 %% draw widget button/value with centered text
 draw_text_box(Win, W, Text) ->
-    epx_gc:set_fill_style(W#widget.fill),
-    set_color(W),
-    epx:draw_rectangle(Win#widget.image, 
-		       W#widget.x, W#widget.y,
-		       W#widget.width, W#widget.height),
+    draw_background(Win, W),
     Font = W#widget.font,
     epx_gc:set_font(W#widget.font),
     %% black text color (fixme)
@@ -948,7 +931,27 @@ draw_text_box(Win, W, Text) ->
     Y = W#widget.y + Yd + epx:font_info(Font, ascent),
     epx:draw_string(Win#widget.image, X, Y, Text).
 
-
+draw_background(Win, W) ->
+    epx_gc:set_fill_style(W#widget.fill),
+    set_color(W),
+    epx:draw_rectangle(Win#widget.image, 
+		       W#widget.x, W#widget.y,
+		       W#widget.width, W#widget.height),
+    
+    if is_record(W#widget.image, epx_pixmap) ->
+	    lager:debug("drawing image ~p", [W#widget.image]),
+	    Width = epx:pixmap_info(W#widget.image,width),
+	    Height = epx:pixmap_info(W#widget.image,height),
+	    epx:pixmap_copy_area(W#widget.image,
+				 Win#widget.image,
+				 0, 0,
+				 W#widget.x, W#widget.y,
+				 Width, Height,
+				 [blend]);
+       true ->
+	    ok
+    end.
+    
 %% set foreground / fillcolor also using animatation state
 set_color(W) ->
     Color0 = W#widget.color,
