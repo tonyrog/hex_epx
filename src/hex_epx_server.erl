@@ -60,6 +60,8 @@
 	  height = 32 :: non_neg_integer(),
 	  text = "",
 	  image   :: epx:epx_pixmap(),
+	  animation :: epx:epx_animation(),
+	  frame :: number(),
 	  color = 16#ff000000,
 	  fill   = none :: epx:epx_fill_style(),
 	  events = []   :: epx:epx_window_event_flags(),
@@ -684,6 +686,19 @@ widget_set([Option|Flags], W) ->
 	    end;
 	{image,Image} when is_record(Image,epx_pixmap) ->
 	    widget_set(Flags, W#widget{image=Image});
+	{animation, File} when is_list(File) ->
+	    try epx:animation_open(hex:text_expand(File, [])) of 
+		Anim ->
+		    lager:debug("open animation file ~s.",[File]),
+		    widget_set(Flags, W#widget{animation = Anim})	   
+	    catch
+		error:_Reason ->
+		    lager:error("unable to open animation file ~s:~p",
+				[File,_Reason]),
+		    widget_set(Flags, W)
+	    end;	    
+	{frame, Frame} when is_integer(Frame) ->
+	    widget_set(Flags, W#widget{frame=Frame});
 	{font, Spec} when is_list(Spec) ->
 	    case epx_font:match(Spec) of
 		false ->
@@ -899,6 +914,11 @@ draw_widget(W, Win) ->
 	      fun() ->
 		      draw_background(Win, W)
 	      end);
+	animation ->
+	    epx_gc:draw(
+	      fun() ->
+		      draw_animation(Win, W, W#widget.animation)
+	      end);
 	text ->
 	    epx_gc:draw(
 	      fun() ->
@@ -930,6 +950,21 @@ draw_text_box(Win, W, Text) ->
     X = W#widget.x + Xd,
     Y = W#widget.y + Yd + epx:font_info(Font, ascent),
     epx:draw_string(Win#widget.image, X, Y, Text).
+
+draw_animation(Win, W, undefined) ->
+    lager:error("No animation available"),
+    draw_background(Win, W);
+draw_animation(Win, W, Anim) ->
+    draw_background(Win, W),  
+    Width = epx:animation_info(Anim, width)+20,
+    Height = epx:animation_info(Anim, height)+20,
+    Format = epx:animation_info(Anim, pixel_format),
+    Count = epx:animation_info(Anim, count),
+    ForegroundPx = epx:pixmap_create(Width, Height, Format),
+    BackgroundPx = epx:pixmap_create(Width, Height, Format),
+    epx:animation_draw(Anim, W#widget.frame, BackgroundPx,
+		       epx_gc:current(), Width, Height).
+ 
 
 draw_background(Win, W) ->
     epx_gc:set_fill_style(W#widget.fill),

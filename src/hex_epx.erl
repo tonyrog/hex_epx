@@ -86,6 +86,7 @@ event_spec(_Dir) ->
 	 {enum,ellipse,[]},
 	 {enum,line,[]},
 	 {enum,image,[]},
+	 {enum,animation,[]},
 	 {enum,text,[]}]},
        {mandatory, true, []}
        ]},
@@ -110,7 +111,10 @@ event_spec(_Dir) ->
      
      {leaf,image,[{type,string,[]}]}, %% fixme. filename/#epx_pixmap{}
 
-     {container,font,  %% fixme: match / #epx_font{}
+     {leaf,animation,[{type,string,[]}]},
+     {leaf,frame,[Number]}, 
+
+    {container,font,  %% fixme: match / #epx_font{}
       [{leaf,name,[{type,string,[]}]},
        {leaf,resolution,[{type,int32,[]}]},
        {leaf,weight,[{type,enumeration,
@@ -143,4 +147,5 @@ event_spec(_Dir) ->
      {leaf,value,[Number]},
      {leaf,format,[{type,string,[]},
 		   {default,"~w",[]}]}
+
     ].
