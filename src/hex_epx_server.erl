@@ -47,6 +47,8 @@
 -define(DEFAULT_WIDTH, 320).
 -define(DEFAULT_HEIGHT, 240).
 
+-define(is_string(Cs), is_list((Cs))).
+
 -record(widget,
 	{
 	  id,                %% named widgets
@@ -651,7 +653,7 @@ widget_set([Option|Flags], W) ->
     case Option of
 	{type,Type} when is_atom(Type) -> 
 	    widget_set(Flags, W#widget{type=Type});
-	{id,ID} when is_atom(ID) -> 
+	{id,ID} when is_atom(ID); ?is_string(ID) -> 
 	    widget_set(Flags, W#widget{id=ID});
 	{static,Bool} when is_boolean(Bool) -> 
 	    widget_set(Flags, W#widget{static=Bool});
@@ -798,12 +800,24 @@ draw_widget(W, Win) ->
 	    %% do not draw (yet), we may use this
 	    %% to draw embedded windows in the future
 	    ok;
+
+	panel ->
+	    %% draw tabs according halign, valign
+	    epx_gc:draw(
+	      fun() ->
+		      epx_gc:set_fill_style(W#widget.fill),
+		      set_color(W),
+		      epx:draw_rectangle(Win#widget.image,
+					 W#widget.x, W#widget.y,
+					 W#widget.width, W#widget.height)
+	      end);
 	button ->
 	    epx_gc:draw(
 	      fun() ->
 		      draw_text_box(Win, W, W#widget.text)
 	      end);
 	slider ->
+	    %% Fixme: draw & handle horizontal / vertical 
 	    epx_gc:draw(
 	      fun() ->
 		      epx_gc:set_fill_style(solid),
