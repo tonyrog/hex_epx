@@ -65,6 +65,7 @@
 	  animation :: epx:epx_animation(),
 	  frame :: number(),
 	  color = 16#ff000000,
+	  font_color = 16#00000000,
 	  fill   = none :: epx:epx_fill_style(),
 	  events = []   :: epx:epx_window_event_flags(),
 	  halign  = center :: top|bottom|center,
@@ -528,6 +529,14 @@ widget_event({button_press,_Button,Where}, W, Window, State) ->
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,1}]),
 	    widget_animate_begin(W#widget { state=active }, press);
+	switch ->
+	    {WState,Value} = 
+		case W#widget.state of
+		    active -> {normal,0};
+		    _ -> {active,1}
+		end,
+	    callback_all(W#widget.id, State#state.subs, [{value,Value}]),
+	    widget_animate_begin(W#widget { state=WState }, press);
 	slider ->
 	    {X,_,_} = Where,
 	    case widget_slider_value(W, X) of
@@ -548,6 +557,8 @@ widget_event({button_release,_Button,_Where}, W, Window, State) ->
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,0}]),
 	    widget_animate_begin(W#widget{state=normal}, release);
+	switch ->
+	    W;
 	slider ->
 	    epx:window_disable_events(Window#widget.win, [motion]),
 	    W#widget{state=normal};
@@ -591,12 +602,20 @@ widget_slider_value(W=#widget { min=Min, max=Max }, X) ->
 
 widget_animate_begin(W, press) ->
     lager:debug("animate_begin: down"),
+    F = case W#widget.state of %% fixme: run several frames if present
+	    active -> 1;
+	    _ -> 0
+	end,
     self() ! refresh,
-    W#widget { animate = {color,{sub,16#00333333}} };
+    W#widget { frame = F, animate = {color,{sub,16#00333333}} };
 widget_animate_begin(W, release) ->
     lager:debug("animate_begin: up"),
     self() ! refresh,
-    W#widget { animate = undefined };
+    F = case W#widget.state of
+	    active -> 1;
+	    _ -> 0
+	    end,
+    W#widget { frame=F, animate = undefined };
 widget_animate_begin(W, flash) ->
     lager:debug("animate_begin"),
     Anim = {flash,0,10},
@@ -711,8 +730,28 @@ widget_set([Option|Flags], W) ->
 	    end;
 	{font,Font} when is_record(Font,epx_font) ->
 	    widget_set(Flags, W#widget{font=Font});
-	{color,Color} when is_integer(Color), Color>=0 ->
+	{color,Color} when is_integer(Color), Color >= 0 ->
 	    widget_set(Flags, W#widget{color=Color});
+	{color,ColorName} when is_list(ColorName) ->
+	    case epx_color:from_name(ColorName) of
+		false ->
+		    lager:error("no such color ~s", [ColorName]),
+		    widget_set(Flags, W);
+		{R,G,B} ->
+		    Color = (255 bsl 24)+(R bsl 16)+(G bsl 8)+B,
+		    widget_set(Flags, W#widget{color=Color})
+	    end;
+	{font_color,Color} when is_integer(Color), Color>=0 ->
+	    widget_set(Flags, W#widget{font_color=Color});
+	{font_color,ColorName} when is_list(ColorName) ->
+	    case epx_color:from_name(ColorName) of
+		false ->
+		    lager:error("no such text color ~s", [ColorName]),
+		    widget_set(Flags, W);
+		{R,G,B} ->
+		    Color = (R bsl 16)+(G bsl 8)+B,
+		    widget_set(Flags, W#widget{font_color=Color})
+	    end;
 	{fill, Style} when is_atom(Style) ->
 	    widget_set(Flags, W#widget{fill=Style});
 	{events,Es} when is_list(Es) ->
@@ -833,6 +872,11 @@ draw_widget(W, Win) ->
 	      fun() ->
 		      draw_text_box(Win, W, W#widget.text)
 	      end);
+	switch ->
+	    epx_gc:draw(
+	      fun() ->
+		      draw_text_box(Win, W, W#widget.text)
+	      end);
 	slider ->
 	    %% Fixme: draw & handle horizontal / vertical 
 	    epx_gc:draw(
@@ -928,11 +972,6 @@ draw_widget(W, Win) ->
 	      fun() ->
 		      draw_background(Win, W)
 	      end);
-	animation ->
-	    epx_gc:draw(
-	      fun() ->
-		      draw_animation(Win, W, W#widget.animation)
-	      end);
 	text ->
 	    epx_gc:draw(
 	      fun() ->
@@ -945,40 +984,29 @@ draw_widget(W, Win) ->
 %% draw widget button/value with centered text
 draw_text_box(Win, W, Text) ->
     draw_background(Win, W),
-    Font = W#widget.font,
-    epx_gc:set_font(W#widget.font),
-    %% black text color (fixme)
-    epx_gc:set_foreground_color(16#00000000),
-    {TxW,TxH} =epx_font:dimension(epx_gc:current(), Text),
-    Xd = case W#widget.halign of
-	     left  -> 0;
-	     right -> W#widget.width - TxW;
-	     center -> (W#widget.width-TxW) div 2
-	 end,
-    Yd = case W#widget.valign of
-	     top -> 0;
-	     bottom -> W#widget.height - TxH;
-	     center -> (W#widget.height-TxH) div 2
-	 end,
-    %% draw centered text
-    X = W#widget.x + Xd,
-    Y = W#widget.y + Yd + epx:font_info(Font, ascent),
-    epx:draw_string(Win#widget.image, X, Y, Text).
+    if is_list(Text), Text =/= "" ->
+	    Font = W#widget.font,
+	    epx_gc:set_font(W#widget.font),
+	    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
+	    {TxW,TxH} =epx_font:dimension(epx_gc:current(), Text),
+	    Xd = case W#widget.halign of
+		     left  -> 0;
+		     right -> W#widget.width - TxW;
+		     center -> (W#widget.width-TxW) div 2
+		 end,
+	    Yd = case W#widget.valign of
+		     top -> 0;
+		     bottom -> W#widget.height - TxH;
+		     center -> (W#widget.height-TxH) div 2
+		 end,
+	    %% draw centered text
+	    X = W#widget.x + Xd,
+	    Y = W#widget.y + Yd + epx:font_info(Font, ascent),
+	    epx:draw_string(Win#widget.image, X, Y, Text);
+       true ->
+	    ok
+    end.
 
-draw_animation(Win, W, undefined) ->
-    lager:error("No animation available"),
-    draw_background(Win, W);
-draw_animation(Win, W, Anim) ->
-    draw_background(Win, W),  
-    Width = epx:animation_info(Anim, width)+20,
-    Height = epx:animation_info(Anim, height)+20,
-    Format = epx:animation_info(Anim, pixel_format),
-    Count = epx:animation_info(Anim, count),
-    ForegroundPx = epx:pixmap_create(Width, Height, Format),
-    BackgroundPx = epx:pixmap_create(Width, Height, Format),
-    epx:animation_draw(Anim, W#widget.frame, BackgroundPx,
-		       epx_gc:current(), Width, Height).
- 
 
 draw_background(Win, W) ->
     epx_gc:set_fill_style(W#widget.fill),
@@ -997,6 +1025,18 @@ draw_background(Win, W) ->
 				 W#widget.x, W#widget.y,
 				 Width, Height,
 				 [blend]);
+       true ->
+	    ok
+    end,
+    if is_record(W#widget.animation, epx_animation) ->
+	    lager:debug("drawing animation ~p", [W#widget.animation]),
+	    Count = epx:animation_info(W#widget.animation, count),
+	    Frame = clamp(W#widget.frame, 0, Count-1),
+	    %% fixme: handle count=0, frame=undefined,
+	    %% fixe scaling
+	    epx:animation_draw(W#widget.animation, round(Frame),
+			       Win#widget.image, epx_gc:current(),
+			       W#widget.x, W#widget.y);
        true ->
 	    ok
     end.

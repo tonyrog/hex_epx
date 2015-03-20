@@ -78,16 +78,16 @@ event_spec(_Dir) ->
 	       {type,decimal64,[{'fraction-digits',6,[]}]}]},
     [{leaf,type, 
       [{type, enumeration,
-	[{enum,button,[]},
-	 {enum,window,[]},
+	[{enum,window,[]},
 	 {enum,panel,[]},
+	 {enum,button,[]},     %% spring-back
+	 {enum,switch,[]},     %% on/off
 	 {enum,slider,[]},
 	 {enum,value,[]},
 	 {enum,rectangle,[]},
 	 {enum,ellipse,[]},
 	 {enum,line,[]},
 	 {enum,image,[]},
-	 {enum,animation,[]},
 	 {enum,text,[]}]},
        {mandatory, true, []}
        ]},
@@ -114,9 +114,10 @@ event_spec(_Dir) ->
 
      {leaf,text,[{type,string,[]},{default,"",[]}]},
      
-     {leaf,image,[{type,string,[]}]}, %% fixme. filename/#epx_pixmap{}
+     {leaf,image,[{type,string,[]}]},
 
      {leaf,animation,[{type,string,[]}]},
+
      {leaf,frame,[Number]}, 
 
     {container,font,  %% fixme: match / #epx_font{}
@@ -132,9 +133,22 @@ event_spec(_Dir) ->
        {leaf,size,[{type,uint32,[]}]}
       ]},
 
-     {leaf,color, [{type,uint32,[]},
-		   {description, "Color in 0xAARRGGBB format", []},
-		   {default,16#ff000000,[]}]},
+     {leaf,font_color,
+      [{description, "Color in 0xAARRGGBB format or X11 name", []},
+       {type,union,
+	[{type,uint32,[]},
+	 {type,string,[]}
+	]},
+       {default,16#00000000,[]}]},
+
+     {leaf,color, 
+      [{description, "Color in 0xAARRGGBB format or X11 name", []},
+       {type,uint32,[]},
+       {type,union,
+	[{type,uint32,[]},
+	 {type,string,[]}
+	]},
+       {default,16#ff000000,[]}]},
 
      {leaf,fill,[{type,enumeration,
 		  [{enum,solid,[]},
