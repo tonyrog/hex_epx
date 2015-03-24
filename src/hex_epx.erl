@@ -115,10 +115,15 @@ event_spec(_Dir) ->
      {leaf,text,[{type,string,[]},{default,"",[]}]},
      
      {leaf,image,[{type,string,[]}]},
+     {leaf,topimage,[{type,string,[]}]},
 
      {leaf,animation,[{type,string,[]}]},
 
      {leaf,frame,[Number]}, 
+     {leaf,border,[Number]}, 
+     {leaf,orientation,[{type,enumeration,
+			  [{enum,horizontal,[]},
+			   {enum,vertical,[]}]}]}, 
 
     {container,font,  %% fixme: match / #epx_font{}
       [{leaf,name,[{type,string,[]}]},
