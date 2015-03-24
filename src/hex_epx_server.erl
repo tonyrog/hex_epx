@@ -74,7 +74,8 @@
 	  max     :: number(),          %% type=value|slider
 	  format = "~w" :: string(),    %% io_lib:format format
 	  value =0 :: number(),         %% type=value|slider
-	  animate,                      %% animation state.
+	  fps = 30.0 :: number,         %% animation frames per second.
+	  animate = undefined,          %% animation state.
 	  font    :: epx:epx_font(),    %% type=text|button|value
 	  win     :: epx:epx_window(),  %% type = window
 	  backing :: epx:epx_pixmap()
@@ -235,7 +236,8 @@ handle_call({output_event,Flags,Env}, _From, State) ->
 		{ok,W} ->
 		    try widget_set(Flags++Env, W) of
 			W1 ->
-			    Ws1 = dict:store(ID,W1,State#state.widgets),
+			    W2 = widget_animate_init(W1),
+			    Ws1 = dict:store(ID,W2,State#state.widgets),
 			    self() ! refresh,
 			    {reply, ok, State#state{widgets=Ws1}}
 		    catch
@@ -254,8 +256,9 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
 		    W0 = #widget{font=State#state.default_font},
 		    try widget_set(Flags,W0) of
 			W1 ->
+			    W2 = widget_animate_init(W1),
 			    %% fixme: handle extra windows
-			    Ws1 = dict:store(ID,W1,State#state.widgets),
+			    Ws1 = dict:store(ID,W2,State#state.widgets),
 			    self() ! refresh,
 			    {reply, ok, State#state{widgets=Ws1}}
 		    catch
@@ -350,7 +353,7 @@ handle_info(refresh, State) ->
 
 handle_info({timeout,TRef,redraw}, State) 
   when TRef =:= State#state.redraw_timer ->
-    lager:debug("redraw"),
+    %% lager:debug("redraw"),
     State1 = redraw_state(State#state { redraw_timer=undefined}),
     {noreply, State1};
 
@@ -599,9 +602,17 @@ widget_slider_value(W=#widget { min=Min, max=Max }, X) ->
 	    false
     end.
 
+widget_animate_init(W) ->
+    if is_record(W#widget.animation, epx_animation),    
+       W#widget.animate =:= continuous;
+       W#widget.animate =:= sequence ->
+	    widget_animate_begin(W, W#widget.animate);
+       true ->
+	    W
+    end.
 
 widget_animate_begin(W, press) ->
-    lager:debug("animate_begin: down"),
+    %% lager:debug("animate_begin: down"),
     F = case W#widget.state of %% fixme: run several frames if present
 	    active -> 1;
 	    _ -> 0
@@ -609,30 +620,56 @@ widget_animate_begin(W, press) ->
     self() ! refresh,
     W#widget { frame = F, animate = {color,{sub,16#00333333}} };
 widget_animate_begin(W, release) ->
-    lager:debug("animate_begin: up"),
+    %% lager:debug("animate_begin: up"),
     self() ! refresh,
     F = case W#widget.state of
 	    active -> 1;
 	    _ -> 0
 	    end,
     W#widget { frame=F, animate = undefined };
-widget_animate_begin(W, flash) ->
-    lager:debug("animate_begin"),
-    Anim = {flash,0,10},
-    erlang:start_timer(0, self(),{animate,W#widget.id,Anim}),
-    W#widget { animate = {color,{interpolate,0.0,16#00ffffff}}}.
+widget_animate_begin(W, continuous) ->
+    %% lager:debug("animate_begin: continuous"),
+    if is_record(W#widget.animation, epx_animation) ->
+	    Count = epx:animation_info(W#widget.animation, count),
+	    Anim = {continuous, 0, Count-1},
+	    %% fixme: only keep one timer for all animations!
+	    erlang:start_timer(0, self(),{animate,W#widget.id,Anim}),
+	    W#widget { animate = continuous };
+       true ->
+	    W
+    end.
 
-widget_animate_end(W, flash) ->
-    lager:debug("animate_end"),
+widget_animate_end(W, sequence) ->
+    %% lager:debug("animate_end"),
+    W#widget { animate = undefined };
+widget_animate_end(W, continuous) ->
+    %% lager:debug("animate_end"),
     W#widget { animate = undefined }.
 
-widget_animate_run(W, {flash,N,N}) ->
-    widget_animate_end(W, flash);
-widget_animate_run(W, {flash,I,N}) ->
-    lager:debug("animate flash ~w of ~w", [I, N]),
-    Anim = {flash,I+1,N},
-    erlang:start_timer(30, self(),{animate,W#widget.id,Anim}),
+widget_animate_run(W, {continuous,I,N}) ->
+    %% lager:debug("animate continues ~w of ~w", [I, N]),
+    I1 = (I+1) rem N,
+    Anim = {continuous,I1,N},    
+    Tmo  = max(10, round(1000/W#widget.fps)),
+    erlang:start_timer(Tmo, self(),{animate,W#widget.id,Anim}),
     case W#widget.animate of
+	continuous ->
+	    W#widget { frame = I };
+	{color,{interpolate,_V,AColor}} ->
+	    W#widget { animate = {color,{interpolate,(I+1)/N,AColor}}};
+	_ ->
+	    W
+    end;
+widget_animate_run(W, {sequence,N,N}) ->
+    widget_animate_end(W, sequence);
+widget_animate_run(W, {sequence,I,N}) ->
+    %% lager:debug("animate sequence ~w of ~w", [I, N]),
+    Anim = {sequence,I+1,N},
+    Tmo  = max(10, round(1000/W#widget.fps)), 
+    erlang:start_timer(Tmo, self(),{animate,W#widget.id,Anim}),
+    case W#widget.animate of
+	sequence ->
+	    W#widget { frame = I };
 	{color,{interpolate,_V,AColor}} ->
 	    W#widget { animate = {color,{interpolate,(I+1)/N,AColor}}};
 	_ ->
@@ -720,6 +757,12 @@ widget_set([Option|Flags], W) ->
 	    end;	    
 	{frame, Frame} when is_integer(Frame) ->
 	    widget_set(Flags, W#widget{frame=Frame});
+	{fps, Fps} when is_number(Fps) ->
+	    widget_set(Flags, W#widget{fps=Fps});
+	{animate, continuous} ->
+	    widget_set(Flags, W#widget{animate=continuous});
+	{animate, sequence} ->
+	    widget_set(Flags, W#widget{animate=sequence});
 	{font, Spec} when is_list(Spec) ->
 	    case epx_font:match(Spec) of
 		false ->
@@ -1016,7 +1059,7 @@ draw_background(Win, W) ->
 		       W#widget.width, W#widget.height),
     
     if is_record(W#widget.image, epx_pixmap) ->
-	    lager:debug("drawing image ~p", [W#widget.image]),
+	    %% lager:debug("drawing image ~p", [W#widget.image]),
 	    Width = epx:pixmap_info(W#widget.image,width),
 	    Height = epx:pixmap_info(W#widget.image,height),
 	    epx:pixmap_copy_area(W#widget.image,
@@ -1029,7 +1072,7 @@ draw_background(Win, W) ->
 	    ok
     end,
     if is_record(W#widget.animation, epx_animation) ->
-	    lager:debug("drawing animation ~p", [W#widget.animation]),
+	    %% lager:debug("drawing animation ~p", [W#widget.animation]),
 	    Count = epx:animation_info(W#widget.animation, count),
 	    Frame = clamp(W#widget.frame, 0, Count-1),
 	    %% fixme: handle count=0, frame=undefined,

@@ -118,7 +118,14 @@ event_spec(_Dir) ->
 
      {leaf,animation,[{type,string,[]}]},
 
+     {leaf,animate,[
+		    {type,enumeration,
+		     [{enum,continuous,[]},
+		      {enum,sequence,[]}]}]},
+
      {leaf,frame,[Number]}, 
+
+     {leaf,fps,[Number]},
 
     {container,font,  %% fixme: match / #epx_font{}
       [{leaf,name,[{type,string,[]}]},
