@@ -1127,7 +1127,7 @@ draw_split_background(Win, W=#widget {orientation = vertical}) ->
     Y0 = Y + Height - 1,
     %% Bottom part
     draw_one_background(Win, W, X, trunc(Y0*(1-R) + Y*R), 
-			Width, trunc(R*(Y0-Y)), 
+			Width, trunc(R*(Y0-Y)) + 1, 
 			Color, Image, Anim),
     %% Top part
     draw_one_background(Win, W, X, Y, 
