@@ -27,7 +27,7 @@
 -behaviour(gen_server).
 
 %% API
--export([start_link/0, stop/0]).
+-export([start_link/1, stop/0]).
 -export([add_event/3, mod_event/2, del_event/1]).
 -export([init_event/2, output_event/2]).
 
@@ -131,10 +131,10 @@ stop() ->
 %% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
-start_link() ->
+start_link(Options) ->
     hex:start_all(lager),
     application:start(epx),
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+    gen_server:start_link({local, ?SERVER}, ?MODULE, Options, []).
 
 %%%===================================================================
 %%% gen_server callbacks
