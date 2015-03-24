@@ -64,10 +64,13 @@
 	  border  :: number(),
 	  orientation = horizontal :: horizontal|vertical,
 	  image   :: epx:epx_pixmap(),
+	  image2   :: epx:epx_pixmap(),
 	  topimage :: epx:epx_pixmap(),
 	  animation :: epx:epx_animation(),
+	  animation2 :: epx:epx_animation(),
 	  frame :: number(),
 	  color = 16#ff000000,
+	  color2,
 	  font_color = 16#00000000,
 	  fill   = none :: epx:epx_fill_style(),
 	  events = []   :: epx:epx_window_event_flags(),
@@ -672,10 +675,10 @@ widget_slider_value(W=#widget {min=Min, max=Max, orientation=vertical}, _X, Y) -
 %% given y coordinate calculate the slider value
     Height = W#widget.height-2,
     if is_number(Min), is_number(Max), Height > 0 ->
-	    Y0 = W#widget.y+1,
-	    Y1 = Y0 + Height - 1,
-	    Yv = clamp(Y, Y0, Y1),
-	    R = (Yv - Y0) / (Y1 - Y0),
+	    Y1 = W#widget.y+1,
+	    Y0 = Y1 + Height - 1,
+	    Yv = clamp(Y, Y1, Y0),
+	    R = (Y0 - Yv) / (Y0 - Y1),
 	    {ok,trunc(Min + R*(Max - Min))};
        true ->
 	    false
@@ -846,6 +849,17 @@ widget_set([Option|Flags], W) ->
 		    Color = (255 bsl 24)+(R bsl 16)+(G bsl 8)+B,
 		    widget_set(Flags, W#widget{color=Color})
 	    end;
+	{color2,Color} when is_integer(Color), Color >= 0 ->
+	    widget_set(Flags, W#widget{color2=Color});
+	{color2,ColorName} when is_list(ColorName) ->
+	    case epx_color:from_name(ColorName) of
+		false ->
+		    lager:error("no such color ~s", [ColorName]),
+		    widget_set(Flags, W);
+		{R,G,B} ->
+		    Color = (255 bsl 24)+(R bsl 16)+(G bsl 8)+B,
+		    widget_set(Flags, W#widget{color2=Color})
+	    end;
 	{font_color,Color} when is_integer(Color), Color>=0 ->
 	    widget_set(Flags, W#widget{font_color=Color});
 	{font_color,ColorName} when is_list(ColorName) ->
@@ -967,7 +981,7 @@ draw_widget(W, Win) ->
 	    epx_gc:draw(
 	      fun() ->
 		      epx_gc:set_fill_style(W#widget.fill),
-		      set_color(W),
+		      set_color(W, W#widget.color),
 		      epx:draw_rectangle(Win#widget.image,
 					 W#widget.x, W#widget.y,
 					 W#widget.width, W#widget.height)
@@ -1020,7 +1034,7 @@ draw_widget(W, Win) ->
 	    epx_gc:draw(
 	      fun() ->
 		      epx_gc:set_fill_style(W#widget.fill),
-		      set_color(W),
+		      set_color(W, W#widget.color),
 		      epx:draw_ellipse(Win#widget.image, 
 				       W#widget.x, W#widget.y,
 				       W#widget.width, W#widget.height)
@@ -1028,7 +1042,7 @@ draw_widget(W, Win) ->
 	line ->
 	    epx_gc:draw(
 	      fun() ->	
-		      set_color(W),
+		      set_color(W, W#widget.color),
 		      epx:draw_line(Win#widget.image, 
 				    W#widget.x, W#widget.y,
 				    W#widget.x+W#widget.width-1,
@@ -1076,39 +1090,83 @@ draw_text_box(Win, W, Text) ->
 
 
 draw_background(Win, W) ->
+    #widget {min=Min, max=Max, width=Width, height=Height, x=X, y=Y} = W,
+   
+    if W#widget.color2 =/= undefined,
+       Min =/= undefined, Max =/= undefined ->
+	    draw_split_background(Win, W);
+       W#widget.image2 =/= undefined,
+       Min =/= undefined, Max =/= undefined ->
+	    draw_split_background(Win, W);
+       W#widget.animation2 =/= undefined,
+       Min =/= undefined, Max =/= undefined ->
+	    draw_split_background(Win, W);
+       true ->
+	    #widget {color = Color, image = Image, animation = Anim} = W,
+	    draw_one_background(Win, W, X, Y, Width, Height, 
+				Color, Image, Anim)
+    end.
+
+draw_split_background(Win, W=#widget {orientation = horizontal}) ->
+    #widget {value = Value, width=Width, height=Height, x=X, y=Y} = W,
+    #widget {color = Color, image = Image, animation = Anim} = W,
+    #widget {color2 = Color2, image2 = Image2, animation2 = Anim2} = W,
+    R = value_proportion(W),
+    draw_one_background(Win, W, X, Y, 
+			trunc(R*Width), Height, 
+			Color, Image, Anim),
+    draw_one_background(Win, W, X + trunc(R*Width), Y,
+			Width - trunc(R*Width), Height, 
+			Color2, Image2, Anim2);
+draw_split_background(Win, W=#widget {orientation = vertical}) ->
+    #widget {value=Value, width=Width, height=Height, x=X, y=Y} = W,
+    lager:debug("drawing background, value ~p", [Value]),
+    #widget {color = Color, image = Image, animation = Anim} = W,
+    #widget {color2 = Color2, image2 = Image2, animation2 = Anim2} = W,
+    R = value_proportion(W),
+    Y0 = Y + Height - 1,
+    %% Bottom part
+    draw_one_background(Win, W, X, trunc(Y0*(1-R) + Y*R), 
+			Width, trunc(R*(Y0-Y)), 
+			Color, Image, Anim),
+    %% Top part
+    draw_one_background(Win, W, X, Y, 
+			Width, trunc((1-R)*(Y0-Y)), 
+			Color2, Image2, Anim2).
+
+   
+draw_one_background(Win, W, X, Y, Width, Height, Color, Image, Anim) ->
     epx_gc:set_fill_style(W#widget.fill),
-    set_color(W),
-    epx:draw_rectangle(Win#widget.image, 
-		       W#widget.x, W#widget.y,
-		       W#widget.width, W#widget.height),
+    set_color(W, Color),
+    epx:draw_rectangle(Win#widget.image, X, Y, Width, Height),
     
-    if is_record(W#widget.image, epx_pixmap) ->
-	    lager:debug("drawing image ~p", [W#widget.image]),
-	    Width = epx:pixmap_info(W#widget.image,width),
-	    Height = epx:pixmap_info(W#widget.image,height),
-	    epx:pixmap_copy_area(W#widget.image,
+    if is_record(Image, epx_pixmap) ->
+	    lager:debug("drawing image ~p", [Image]),
+	    Width = epx:pixmap_info(Image,width),
+	    Height = epx:pixmap_info(Image,height),
+	    epx:pixmap_copy_area(Image,
 				 Win#widget.image,
-				 0, 0,
-				 W#widget.x, W#widget.y,
-				 Width, Height,
+				 0, 0, X, Y, Width, Height,
 				 [blend]);
        true ->
 	    ok
     end,
-    if is_record(W#widget.animation, epx_animation) ->
-	    lager:debug("drawing animation ~p", [W#widget.animation]),
-	    Count = epx:animation_info(W#widget.animation, count),
+    if is_record(Anim, epx_animation) ->
+	    lager:debug("drawing animation ~p", [Anim]),
+	    Count = epx:animation_info(Anim, count),
 	    Frame = clamp(W#widget.frame, 0, Count-1),
 	    %% fixme: handle count=0, frame=undefined,
 	    %% fixe scaling
-	    epx:animation_draw(W#widget.animation, round(Frame),
+	    epx:animation_draw(Anim, round(Frame),
 			       Win#widget.image, epx_gc:current(),
-			       W#widget.x, W#widget.y);
+			       X,Y);
        true ->
 	    ok
     end.
     
 draw_border(_Win, _W, undefined) ->
+    ok;
+draw_border(_Win, _W, 0) ->
     ok;
 draw_border(Win, W, Border) ->
     %% fixme: calculate size from border thickness
@@ -1121,22 +1179,7 @@ draw_border(Win, W, Border) ->
 draw_value_bar(Win, W, TopImage) ->
     #widget { min=Min, max=Max, value=Value} = W,
     if is_number(Min),is_number(Max),is_number(Value) ->
-	    Delta = abs(Max - Min),
-	    R = if Min < Max ->
-			V = if Value < Min -> Min;
-			       Value > Max -> Max;
-			       true -> Value
-			    end,
-			(V - Min)/Delta;
-		   Min > Max -> %% reversed axis
-			V = if Value > Min -> Min;
-			       Value < Max -> Max;
-			       true -> Value
-			    end,
-			(V - Max)/Delta;
-		   true ->
-			0.5
-		end,
+	    R = value_proportion(W),
 	    if is_record(TopImage, epx_pixmap) ->
 		    draw_topimage(Win, W, TopImage, R);
 	       true ->
@@ -1148,6 +1191,24 @@ draw_value_bar(Win, W, TopImage) ->
 		
     end.
 
+value_proportion(W) ->
+    #widget { min=Min, max=Max, value=Value} = W,
+    Delta = abs(Max - Min),
+    if Min < Max ->
+		V = if Value < Min -> Min;
+		       Value > Max -> Max;
+		       true -> Value
+		    end,
+		(V - Min)/Delta;
+	   Min > Max -> %% reversed axis
+		V = if Value > Min -> Min;
+		       Value < Max -> Max;
+		       true -> Value
+		    end,
+		(V - Max)/Delta;
+	   true ->
+		0.5
+	end.
 
 draw_topimage(Win, W, TopImage, R) ->
     lager:debug("drawing topimage ~p, orientation ~p, r ~p", 
@@ -1159,8 +1220,11 @@ draw_topimage(Win, W, TopImage, R) ->
 		     {trunc(W#widget.x + R*((W#widget.width-Width)-1)),
 		      W#widget.y + W#widget.height div 2 - Height div 2};
 		 vertical ->
+		     Y0 = W#widget.y + W#widget.height - 1,
+		     Y1 = W#widget.y,
+		     Yv = trunc(Y0*(1-R) + Y1*R),
 		     {W#widget.x + W#widget.width div 2 - Width div 2,
-		      trunc(W#widget.y + R*((W#widget.height-Height)-1))}
+		      (Yv - Width div 2)}
 	     end,
     epx:pixmap_copy_area(TopImage,
 			 Win#widget.image,
@@ -1179,15 +1243,16 @@ draw_value_marker(Win, W, R) ->
 			       X, Y, M, W#widget.height-4);
 	vertical ->
 	    X = W#widget.x + 2,
-	    Y = trunc(W#widget.y + R*((W#widget.height-M)-1)),
+	    Y0 = W#widget.y + W#widget.height - 1,
+	    Y1 = W#widget.y,
+	    Y = trunc(Y0*(1-R) + Y1*R),
 	    epx:draw_rectangle(Win#widget.image,
-			       X, Y, W#widget.width-4, M)
+			       X, Y - (M div 2), W#widget.width-4, M)
 	    
     end.
 
 %% set foreground / fillcolor also using animatation state
-set_color(W) ->
-    Color0 = W#widget.color,
+set_color(W, Color0) ->
     Color = case W#widget.animate of
 		{color,{add,AColor}} ->
 		    color_add(Color0, AColor);

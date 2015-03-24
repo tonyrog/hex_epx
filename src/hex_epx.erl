@@ -115,9 +115,11 @@ event_spec(_Dir) ->
      {leaf,text,[{type,string,[]},{default,"",[]}]},
      
      {leaf,image,[{type,string,[]}]},
+     {leaf,image2,[{type,string,[]}]},
      {leaf,topimage,[{type,string,[]}]},
 
      {leaf,animation,[{type,string,[]}]},
+     {leaf,animation2,[{type,string,[]}]},
 
      {leaf,frame,[Number]}, 
      {leaf,border,[Number]}, 
@@ -154,6 +156,14 @@ event_spec(_Dir) ->
 	 {type,string,[]}
 	]},
        {default,16#ff000000,[]}]},
+
+     {leaf,color2, 
+      [{description, "Color in 0xAARRGGBB format or X11 name", []},
+       {type,uint32,[]},
+       {type,union,
+	[{type,uint32,[]},
+	 {type,string,[]}
+	]}]},
 
      {leaf,fill,[{type,enumeration,
 		  [{enum,solid,[]},
