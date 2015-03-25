@@ -87,7 +87,6 @@ event_spec(_Dir) ->
 	 {enum,rectangle,[]},
 	 {enum,ellipse,[]},
 	 {enum,line,[]},
-	 {enum,image,[]},
 	 {enum,text,[]}]},
        {mandatory, true, []}
        ]},
@@ -108,6 +107,7 @@ event_spec(_Dir) ->
       
      {leaf,x,[{type,int32,[]},{default,0,[]}]},
      {leaf,y,[{type,int32,[]},{default,0,[]}]},
+     {leaf,z,[{type,int32,[]},{default,0,[]}]},
 
      {leaf,width,[{type,uint32,[]},{default,32,[]}]},
      {leaf,height,[{type,uint32,[]},{default,32,[]}]},
@@ -126,13 +126,12 @@ event_spec(_Dir) ->
 		     [{enum,continuous,[]},
 		      {enum,sequence,[]}]}]},
 
-     {leaf,frame,[Number]}, 
+     {leaf,frame,[Number]},
+     {leaf,frame2,[Number]},
      {leaf,border,[Number]}, 
      {leaf,orientation,[{type,enumeration,
 			  [{enum,horizontal,[]},
-			   {enum,vertical,[]}]}]}, 
-
-     {leaf,fps,[Number]},
+			   {enum,vertical,[]}]}]},
 
     {container,font,  %% fixme: match / #epx_font{}
       [{leaf,name,[{type,string,[]}]},

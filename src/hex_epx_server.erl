@@ -43,9 +43,10 @@
 -define(DICT_T, term()).  %% dict:dict()
 -define(SETS_T, term()).  %% sets:set()
 
-%% FIXME: configure this
--define(DEFAULT_WIDTH, 320).
+-define(DEFAULT_WIDTH,  320).
 -define(DEFAULT_HEIGHT, 240).
+
+-define(MAX_TICKS, 16#ffffffff).  %% about 49.7 days
 
 -define(is_string(Cs), is_list((Cs))).
 
@@ -53,11 +54,12 @@
 	{
 	  id,                %% named widgets
 	  type,              %% button,rectangle,slider ...
-	  window = screen,   %% id of base window (if type != window)
+	  window,            %% id of base window (if type != window)
 	  state  = normal,   %% or active,selected,closed ..
 	  static = false,    %% object may not be deleted
 	  x = 0   :: integer(),
 	  y = 0   :: integer(),
+	  z = 0   :: integer(),   %% define the order for overlap
 	  width  = 32 :: non_neg_integer(),
 	  height = 32 :: non_neg_integer(),
 	  text = "",
@@ -69,6 +71,7 @@
 	  animation :: epx:epx_animation(),
 	  animation2 :: epx:epx_animation(),
 	  frame :: number(),
+	  frame2 :: number(),
 	  color = 16#ff000000,
 	  color2,
 	  font_color = 16#00000000,
@@ -80,8 +83,8 @@
 	  max     :: number(),          %% type=value|slider
 	  format = "~w" :: string(),    %% io_lib:format format
 	  value =0 :: number(),         %% type=value|slider
-	  fps = 30.0 :: number,         %% animation frames per second.
 	  animate = undefined,          %% animation state.
+	  animate2 = undefined,         %% animation state of second animation.
 	  font    :: epx:epx_font(),    %% type=text|button|value
 	  win     :: epx:epx_window(),  %% type = window
 	  backing :: epx:epx_pixmap()
@@ -101,9 +104,14 @@
 	  redraw_timer = undefined,
 	  active = [] :: [term()],   %% active widgets pressed
 	  subs = [] :: [#sub{}],
+	  fps = 30.0 :: number(),       %% animation frames per second
+	  mpf = 1000/30.0 :: number(),  %% millis per frame
+	  clock :: reference(),         %% clock reference
+	  redraw_tick :: number(),      %% aprox redraw clock
 	  default_font :: epx:epx_font(),
-	  wset    :: ?SETS_T,  %% set of window id
-	  widgets :: ?DICT_T   %% term => #widget{}
+	  wset    :: ?SETS_T            %% set of window id
+	  %% widgets are now stored in process dictionary
+	  %% widgets :: ?DICT_T   %% term => #widget{}
 	 }).
 
 add_event(Flags, Signal, Cb) ->
@@ -113,7 +121,10 @@ del_event(Ref) ->
     gen_server:call(?MODULE, {del_event, Ref}).
 
 output_event(Flags, Env) ->
-    gen_server:call(?MODULE, {output_event, Flags, Env}).
+    %% Init event is supposed to have sent all flags, so only
+    %% pickout the id field and send environment
+    Flags1 = [{id,proplists:get_value(id,Flags,undefined)}],
+    gen_server:call(?MODULE, {output_event, Flags1, Env}).
 
 init_event(Dir, Flags) ->
     gen_server:call(?MODULE, {init_event, Dir, Flags}).
@@ -158,6 +169,7 @@ start_link(Options) ->
 init(Args) ->
     Joined = hex:auto_join(hex_epx),
     Backend = epx_backend:default(),
+    Fps = proplists:get_value(fps, Args, 30.0),
     Name = epx:backend_info(Backend, name),
     Width =
 	if Name =:= "fb" ->
@@ -193,9 +205,14 @@ init(Args) ->
 				       button,wheel]},
 			     {color, 16#ffffffff}]),
     self() ! refresh,
+    %% This clock will run for 49,71 days before timeout, but we
+    %% use it as a cheap? clock source.
+    Clock = clock_create(),
+    widget_store(Default),
     {ok, #state{ joined = Joined,
 		 default_font = Font,
-		 widgets = dict:from_list([{Default#widget.id,Default}]),
+		 fps = Fps,
+		 clock = Clock,
 		 wset = sets:from_list([Default#widget.id])
 	       }}.
 
@@ -236,16 +253,15 @@ handle_call({output_event,Flags,Env}, _From, State) ->
 	false ->
 	    {reply,{error,missing_id},State};
 	{id,ID} ->
-	    case dict:find(ID, State#state.widgets) of
+	    case widget_find(ID) of
 		error ->
 		    {reply,{error,enoent},State};
 		{ok,W} ->
 		    try widget_set(Flags++Env, W) of
 			W1 ->
-			    W2 = widget_animate_init(W1),
-			    Ws1 = dict:store(ID,W2,State#state.widgets),
+			    widget_store(W1),
 			    self() ! refresh,
-			    {reply, ok, State#state{widgets=Ws1}}
+			    {reply, ok, State}
 		    catch
 			error:Reason ->
 			    {reply, {error,Reason}, State}
@@ -257,16 +273,21 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
 	false ->
 	    {reply,{error,missing_id},State};
 	{id,ID} ->
-	    case dict:find(ID,State#state.widgets) of
+	    case widget_find(ID) of
 		error ->
 		    W0 = #widget{font=State#state.default_font},
 		    try widget_set(Flags,W0) of
 			W1 ->
-			    W2 = widget_animate_init(W1),
-			    %% fixme: handle extra windows
-			    Ws1 = dict:store(ID,W2,State#state.widgets),
+			    W2 =
+				if W1#widget.type =/= window,
+				   W1#widget.window =:= undefined ->
+					W1#widget { window = screen };
+				   true ->
+					W1
+				end,
+			    widget_store(W2),
 			    self() ! refresh,
-			    {reply, ok, State#state{widgets=Ws1}}
+			    {reply, ok, State}
 		    catch
 			error:Reason ->
 			    io:format("widget ~p not created ~p\n",
@@ -276,9 +297,9 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
 		{ok,W} ->
 		    try widget_set(Flags,W) of
 			W1 ->
-			    Ws1 = dict:store(ID,W1,State#state.widgets),
+			    widget_store(W1),
 			    self() ! refresh,
-			    {reply, ok, State#state{widgets=Ws1}}
+			    {reply, ok, State}
 		    catch
 			error:Reason ->
 			    io:format("widget ~p not updated ~p\n",
@@ -288,15 +309,15 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
 	    end
     end;
 handle_call({mod_event,_Dir,Flags}, _From, State) ->
-    case lookup_widget(Flags, State) of
+    case widget_lookup(Flags) of
 	E={error,_} ->
 	    {reply,E, State};
 	{ok,W} ->
 	    try widget_set(Flags, W) of
 		W1 ->
-		    Ws1 = dict:store(W#widget.id,W1,State#state.widgets),
+		    widget_store(W1),
 		    self() ! refresh,
-		    {reply, ok, State#state{widgets=Ws1}}
+		    {reply, ok, State}
 	    catch
 		error:Reason ->
 		    {reply, {error,Reason}, State}
@@ -330,7 +351,7 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({epx_event,Win,Event}, State) ->
-    lager:debug("event: ~p", [Event]),
+    %% lager:debug("event: ~p", [Event]),
     %% find window widget (fixme: add reverse map at some point) ?
     case fold_windows(
 	   fun(W,Acc) ->
@@ -339,29 +360,29 @@ handle_info({epx_event,Win,Event}, State) ->
 		   end
 	   end, [], State) of
 	[] ->
-	    lager:error("window not found"),
+	    lager:error("window ~p not found", [Win]),
 	    {noreply, State};
 	[W] ->  %% should only be one!
 	    handle_event(Event, W, State)
     end;
-handle_info({timeout,_Ref,{animate,ID,Anim}}, State) ->
-    case dict:find(ID, State#state.widgets) of
-	error -> {noreply, State};
-	{ok,W} ->
-	    W1 = widget_animate_run(W, Anim),
-	    Ws = dict:store(ID,W1,State#state.widgets),
-	    State1 = State#state { widgets = Ws },
-	    State2 = redraw_schedule(State1),
-	    {noreply,State2}
-    end;
 handle_info(refresh, State) ->
     {noreply, redraw_schedule(State)};
+
 
 handle_info({timeout,TRef,redraw}, State) 
   when TRef =:= State#state.redraw_timer ->
     %% lager:debug("redraw"),
+    put(animations, false),
     State1 = redraw_state(State#state { redraw_timer=undefined}),
-    {noreply, State1};
+    case get(animations) of
+	false ->
+	    {noreply, State1};
+	true ->
+	    {noreply, redraw_schedule(State1)}
+    end;
+handle_info(clock_restart, State) ->
+    %% fixme how to handle handle active timers ?
+    {noreply, State#state { clock = clock_create() }};
 
 handle_info({'DOWN',Ref,process,_Pid,_Reason}, State) ->
     case lists:keytake(Ref, #sub.ref, State#state.subs) of
@@ -371,7 +392,7 @@ handle_info({'DOWN',Ref,process,_Pid,_Reason}, State) ->
 	    {noreply, State#state { subs=Subs} }
     end;
 handle_info(_Info, State) ->
-    lager:debug("info = %p", [_Info]),
+    lager:debug("info = ~p", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -404,12 +425,35 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-lookup_widget(Flags, State) ->
+widget_list() ->
+    [W || {_,W} <- erlang:get(), is_record(W, widget)].
+
+widget_store(W) ->
+    put(W#widget.id, W),
+    W.
+
+widget_erase(ID) ->
+    erase(ID).
+
+widget_fetch(ID) ->
+    case get(ID) of
+	W when is_record(W, widget) -> W
+    end.
+
+widget_find(ID) ->
+    case get(ID) of
+	undefined ->
+	    error;
+	W when is_record(W, widget) -> 
+	    {ok,W}
+    end.
+
+widget_lookup(Flags) ->
     case lists:keyfind(id, 1, Flags) of
 	false ->
 	    {error,missing_id};
 	{id,ID} ->
-	    case dict:find(ID, State#state.widgets) of
+	    case widget_find(ID) of
 		error ->
 		    {error,enoent};
 		{ok,W} ->
@@ -427,20 +471,20 @@ handle_event(Event={button_press,Button,{X,Y,_}},Window,State) ->
 	true ->
 	    %% locate an active widget at position (X,Y)
 	    WinID = Window#widget.id,
-	    Ws = State#state.widgets,
-	    case widgets_at_location(Ws,X,Y,WinID) of
+	    case widgets_at_location(X,Y,WinID) of
 		[] ->
 		    {noreply, State};
-		[W|_] ->  %% z-sort ?
+		_Ws1=[W|_] ->
+		    %% lager:debug("selected ws=~p", [[W#widget.id||W<-_Ws1]]),
 		    case widget_event(Event, W, Window, State) of
-			W -> 
+			W ->
 			    {noreply, State};
 			W1 ->
 			    ID = W1#widget.id,
 			    Active = [ID | State#state.active],
-			    Ws1 = dict:store(ID, W1, Ws),
-			    {noreply, State#state { active = Active,
-						    widgets = Ws1}}
+			    widget_store(W1),
+			    self() ! refresh,
+			    {noreply, State#state { active = Active }}
 		    end
 	    end;
 	false ->
@@ -450,18 +494,20 @@ handle_event(Event={button_release,Button,{_X,_Y,_}},Window,State) ->
     case lists:member(left,Button) of
 	true ->
 	    %% release "all" active widgets
+	    %% FIXME: multi touch
 	    State1 = 
 		lists:foldl(
 		  fun(ID, Si) ->
-			  Ws = Si#state.widgets,
-			  case dict:find(ID, Ws) of
+			  case widget_find(ID) of
 			      error -> Si;
 			      {ok,W} ->
 				  case widget_event(Event, W, Window, Si) of
-				      W -> Si; %% no changed
+				      W ->
+					  Si; %% no changed
 				      W1 ->
-					  Ws1 = dict:store(W1#widget.id,W1,Ws),
-					  Si#state { widgets = Ws1}
+					  widget_store(W1),
+					  self() ! refresh,
+					  Si
 				  end
 			  end
 		  end, State, State#state.active),
@@ -474,16 +520,16 @@ handle_event(Event={motion,Button,{X,Y,_}},Window,State) ->
 	true ->
 	    %% locate an active widget at position (X,Y)
 	    WinID = Window#widget.id,
-	    Ws = State#state.widgets,
-	    case widgets_at_location(Ws,X,Y,WinID) of
+	    case widgets_at_location(X,Y,WinID) of
 		[] ->
 		    {noreply, State};
 		[W|_] ->
 		    case widget_event(Event, W, Window, State) of
 			W -> {noreply, State}; %% no changed
 			W1 ->
-			    Ws1 = dict:store(W1#widget.id, W1, Ws),
-			    {noreply, State#state { widgets = Ws1}}
+			    widget_store(W1),
+			    self() ! refresh,
+			    {noreply, State}
 		    end
 	    end;
 	false ->
@@ -508,7 +554,8 @@ handle_event(Event=close,Window,State) ->
        true ->
 	    unmap_window(Window),
 	    Window1 = widget_event(Event, Window, Window, State),
-	    State1 = delete_widget(Window1, State),
+	    State1 = widget_delete(Window1, State),
+	    self() ! refresh,
 	    {noreply, State1}
     end;
 handle_event(_Event,_W,State) ->
@@ -516,61 +563,45 @@ handle_event(_Event,_W,State) ->
     {noreply, State}.
 
 %%
-%% Find all widgets in window WinID that is hit by the 
-%% point (X,Y).
+%% Find all widgets in window WinID that is hit by the
+%% point (X,Y). Return a Z sorted list
 %%
-widgets_at_location(Ws,X,Y,WinID) ->
-    dict:fold(
-      fun(_ID,W,Acc) ->
-	      if W#widget.window =:= WinID,
-		 X >= W#widget.x, Y >= W#widget.y,
-		 X =< W#widget.x + W#widget.width - 1,
-		 Y =< W#widget.y + W#widget.height - 1 ->
-		      [W|Acc];
-		 W#widget.window =:= WinID ->
-		      case topimage_at_location(W,X,Y,W#widget.topimage) of
-			  true -> 
-			      [W|Acc];
-			  false -> 
-			      case image_at_location(W,X,Y,W#widget.image) of
-				  true ->
-				      [W|Acc];
-				  false ->
-				      case animation_at_location(W,X,Y,W#widget.animation) of
-					  true ->
-					      [W|Acc];
-					  false ->
-					      Acc
-				      end
-			      end
-		      end;
-		 true ->
-		      Acc
-	      end
-      end, [], Ws).
-
+widgets_at_location(X,Y,WinID) ->
+    Ws = fold_widgets(
+	   fun(W,Acc) when W#widget.window =:= WinID ->
+		   if X >= W#widget.x, X < W#widget.x + W#widget.width,
+		      Y >= W#widget.y, Y < W#widget.y + W#widget.height ->
+			   [W|Acc];
+		      true ->
+			   case topimage_at_location(W,X,Y,W#widget.topimage) of
+			       true -> 
+				   [W|Acc];
+			       false ->
+				   Acc
+			   end
+		   end;
+	      (_,Acc) -> Acc
+	   end, []),
+    %% sort according to Z order
+    lists:sort(fun(A,B) -> A#widget.z > B#widget.z end, Ws).
+    
+%%
+%% Check if (X,Y) hit inside a topimage (used in slider)
+%%
 topimage_at_location(_W,_X,_Y,undefined) ->
     false;
 topimage_at_location(W=#widget {orientation = horizontal},X,Y,Image) ->
     Height = epx:pixmap_info(Image,height),
-    Y1 = W#widget.y + W#widget.height div 2 - Height div 2,
-    Y2 = W#widget.y + W#widget.height div 2 + Height div 2,
-    if X >= W#widget.x, Y >= Y1,
-       X =< W#widget.x + W#widget.width - 1, Y =< Y2 ->
-	    true;
-       true ->
-	    false
-    end;
+    Y1 = W#widget.y + (W#widget.height - Height) div 2,
+    Y2 = W#widget.y + (W#widget.height + Height) div 2,
+    (X >= W#widget.x) andalso (X < W#widget.x + W#widget.width) andalso
+	(Y >= Y1) andalso (Y =< Y2);
 topimage_at_location(W=#widget {orientation = vertical},X,Y,Image) ->
     Width = epx:pixmap_info(Image,width),
-    X1 = W#widget.x + W#widget.width div 2 - Width div 2,
-    X2 = W#widget.x + W#widget.width div 2 + Width div 2,
-    if Y >= W#widget.y, X >= X1,
-       Y =< W#widget.y + W#widget.height - 1, X =< X2 ->
-	    true;
-       true ->
-	    false
-    end.
+    X1 = W#widget.x + (W#widget.width - Width) div 2,
+    X2 = W#widget.x + (W#widget.width + Width) div 2,
+    (Y >= W#widget.y) andalso (Y < W#widget.y + W#widget.height) andalso
+	(X >= X1) andalso (X =< X2).
 
 image_at_location(_W,_X,_Y,undefined) ->
     false;
@@ -604,26 +635,27 @@ widget_event({button_press,_Button,Where}, W, Window, State) ->
     case W#widget.type of
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,1}]),
-	    widget_animate_begin(W#widget { state=active }, press);
+	    W#widget { state=active, value=1 };
+
 	switch ->
-	    {WState,Value} = 
+	    {WState,Value} =
 		case W#widget.state of
 		    active -> {normal,0};
 		    _ -> {active,1}
 		end,
 	    callback_all(W#widget.id, State#state.subs, [{value,Value}]),
-	    widget_animate_begin(W#widget { state=WState }, press);
+	    W#widget { frame=Value, state=WState, value=Value };
+
 	slider ->
 	    {X,Y,_} = Where,
 	    case widget_slider_value(W, X, Y) of
-		{ok,Value} ->
-		    epx:window_enable_events(Window#widget.win, [motion]),
-		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
-		    self() ! refresh,
-		    W#widget { state=active, value = Value };
 		false ->
 		    lager:debug("slider min/max/width error"),
-		    W
+		    W;
+		Value ->
+		    epx:window_enable_events(Window#widget.win, [motion]),
+		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
+		    W#widget { state=active, value = Value }
 	    end;
 	_ ->
 	    W
@@ -632,7 +664,7 @@ widget_event({button_release,_Button,_Where}, W, Window, State) ->
     case W#widget.type of
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,0}]),
-	    widget_animate_begin(W#widget{state=normal}, release);
+	    W#widget{state=normal, value=0};
 	switch ->
 	    W;
 	slider ->
@@ -646,12 +678,10 @@ widget_event({motion,_Button,Where}, W, _Window, State) ->
 	slider ->
 	    {X,Y,_} = Where,
 	    case widget_slider_value(W, X, Y) of
-		{ok,Value} ->
+		false -> W;
+		Value ->
 		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
-		    self() ! refresh,
-		    W#widget { value = Value };
-		false ->
-		    W
+		    W#widget { value = Value }
 	    end;
 	_ ->
 	    W
@@ -662,103 +692,29 @@ widget_event(close, W, _Window, State) ->
 widget_event(_Event, W, _Window, _State) ->
     W.
 
-widget_slider_value(W=#widget {min=Min, max=Max, orientation=horizontal}, X, _Y) ->
-%% given x coordinate calculate the slider value
+%% Calcuate the slider value given coordinate X,Y either horizontal or
+%% vertical. return a floating point value between 0 and 1
+widget_slider_value(W=#widget {min=Min,max=Max,orientation=horizontal},X,_Y) ->
     Width = W#widget.width-2,
     if is_number(Min), is_number(Max), Width > 0 ->
 	    X0 = W#widget.x+1,
 	    X1 = X0 + Width - 1,
 	    Xv = clamp(X, X0, X1),
 	    R = (Xv - X0) / (X1 - X0),
-	    {ok,trunc(Min + R*(Max - Min))};
+	    trunc(Min + R*(Max - Min));
        true ->
 	    false
     end;
-widget_slider_value(W=#widget {min=Min, max=Max, orientation=vertical}, _X, Y) ->
-%% given y coordinate calculate the slider value
+widget_slider_value(W=#widget {min=Min, max=Max, orientation=vertical},_X,Y) ->
     Height = W#widget.height-2,
     if is_number(Min), is_number(Max), Height > 0 ->
 	    Y1 = W#widget.y+1,
 	    Y0 = Y1 + Height - 1,
 	    Yv = clamp(Y, Y1, Y0),
 	    R = (Y0 - Yv) / (Y0 - Y1),
-	    {ok,trunc(Min + R*(Max - Min))};
+	    trunc(Min + R*(Max - Min));
        true ->
 	    false
-    end.
-
-widget_animate_init(W) ->
-    if is_record(W#widget.animation, epx_animation),    
-       W#widget.animate =:= continuous;
-       W#widget.animate =:= sequence ->
-	    widget_animate_begin(W, W#widget.animate);
-       true ->
-	    W
-    end.
-
-widget_animate_begin(W, press) ->
-    %% lager:debug("animate_begin: down"),
-    F = case W#widget.state of %% fixme: run several frames if present
-	    active -> 1;
-	    _ -> 0
-	end,
-    self() ! refresh,
-    W#widget { frame = F, animate = {color,{sub,16#00333333}} };
-widget_animate_begin(W, release) ->
-    %% lager:debug("animate_begin: up"),
-    self() ! refresh,
-    F = case W#widget.state of
-	    active -> 1;
-	    _ -> 0
-	    end,
-    W#widget { frame=F, animate = undefined };
-widget_animate_begin(W, continuous) ->
-    %% lager:debug("animate_begin: continuous"),
-    if is_record(W#widget.animation, epx_animation) ->
-	    Count = epx:animation_info(W#widget.animation, count),
-	    Anim = {continuous, 0, Count-1},
-	    %% fixme: only keep one timer for all animations!
-	    erlang:start_timer(0, self(),{animate,W#widget.id,Anim}),
-	    W#widget { animate = continuous };
-       true ->
-	    W
-    end.
-
-widget_animate_end(W, sequence) ->
-    %% lager:debug("animate_end"),
-    W#widget { animate = undefined };
-widget_animate_end(W, continuous) ->
-    %% lager:debug("animate_end"),
-    W#widget { animate = undefined }.
-
-widget_animate_run(W, {continuous,I,N}) ->
-    %% lager:debug("animate continues ~w of ~w", [I, N]),
-    I1 = (I+1) rem N,
-    Anim = {continuous,I1,N},    
-    Tmo  = max(10, round(1000/W#widget.fps)),
-    erlang:start_timer(Tmo, self(),{animate,W#widget.id,Anim}),
-    case W#widget.animate of
-	continuous ->
-	    W#widget { frame = I };
-	{color,{interpolate,_V,AColor}} ->
-	    W#widget { animate = {color,{interpolate,(I+1)/N,AColor}}};
-	_ ->
-	    W
-    end;
-widget_animate_run(W, {sequence,N,N}) ->
-    widget_animate_end(W, sequence);
-widget_animate_run(W, {sequence,I,N}) ->
-    %% lager:debug("animate sequence ~w of ~w", [I, N]),
-    Anim = {sequence,I+1,N},
-    Tmo  = max(10, round(1000/W#widget.fps)), 
-    erlang:start_timer(Tmo, self(),{animate,W#widget.id,Anim}),
-    case W#widget.animate of
-	sequence ->
-	    W#widget { frame = I };
-	{color,{interpolate,_V,AColor}} ->
-	    W#widget { animate = {color,{interpolate,(I+1)/N,AColor}}};
-	_ ->
-	    W
     end.
 
 callback_all(Wid, Subs, Env) ->
@@ -865,12 +821,12 @@ widget_set([Option|Flags], W) ->
 	    end;	    
 	{frame, Frame} when is_integer(Frame) ->
 	    widget_set(Flags, W#widget{frame=Frame});
-	{fps, Fps} when is_number(Fps) ->
-	    widget_set(Flags, W#widget{fps=Fps});
-	{animate, continuous} ->
-	    widget_set(Flags, W#widget{animate=continuous});
-	{animate, sequence} ->
-	    widget_set(Flags, W#widget{animate=sequence});
+	{frame2, Frame} when is_integer(Frame) ->
+	    widget_set(Flags, W#widget{frame2=Frame});
+	{animate, Style} when Style =:= continuous; Style =:= sequence ->
+	    widget_set(Flags, W#widget{animate=Style});
+	{animate2, Style} when Style =:= continuous; Style =:= sequence ->
+	    widget_set(Flags, W#widget{animate2=Style});
 	{font, Spec} when is_list(Spec) ->
 	    case epx_font:match(Spec) of
 		false ->
@@ -948,51 +904,71 @@ redraw_schedule(State) ->
     if is_reference(State#state.redraw_timer) ->
 	    State;
        State#state.redraw_timer =:= undefined ->
-	    Timer = erlang:start_timer(50, self(), redraw),
-	    State#state { redraw_timer = Timer }
+	    RedrawTick = clock_timeout(State, State#state.mpf),
+	    Timer = erlang:start_timer(trunc(State#state.mpf), self(), redraw),
+	    State#state { redraw_timer = Timer,
+			  redraw_tick = RedrawTick }
     end.
 
+
+clock_create() ->
+    erlang:start_timer(?MAX_TICKS, self(), clock_restart).
+
+%% clock ticks since (millis) since last clock restart
+clock_read(State) ->
+    ?MAX_TICKS - erlang:read_timer(State#state.clock).
+
+%% calculate an absolute timeout value (relative clock source)
+clock_timeout(State, Time) when is_number(Time), Time >= 0 ->
+    Tick = clock_read(State),
+    trunc(Tick + Time) band ?MAX_TICKS.
+    
 redraw_state(State) ->
     each_window(fun clear_window/1, State),
     each_widget(fun(W) ->
-			case dict:find(W#widget.window, State#state.widgets) of
-			   error ->
-			       lager:error("missing window id=~w\n",
-					   [W#widget.window]);
+			case widget_find(W#widget.window) of
+			    error ->
+				lager:error("widget ~w missing window id=~w\n",
+					    [W#widget.id, W#widget.window]);
 			    {ok,Win} ->
 				draw_widget(W, Win)
 			end
-		end, State),
+		end),
     each_window(fun update_window/1, State),
     State.
 
-delete_widget(#widget{id=Wid,type=Type}, State) ->
-    Widgets1 = dict:erase(Wid, State#state.widgets),
+widget_delete(#widget{id=Wid,type=Type}, State) ->
+    widget_erase(Wid),
     Wset1 = if Type =:= window ->
 		    sets:del_delement(Wid,State#state.wset);
 	       true ->
 		    State#state.wset
 	    end,
-    State#state { widgets=Widgets1, wset=Wset1 }.
-    
+    State#state { wset=Wset1 }.
 
-fold_widgets(Fun, Acc, State) ->
-    dict:fold(fun(_K,W,Acc1) -> Fun(W,Acc1) end, Acc, State#state.widgets).
+%% go through all widgets including windows    
+fold_widgets(Fun, Acc) ->
+    lists:foldl(Fun, Acc, widget_list()).
 
-each_widget(Fun, State) ->
-    fold_widgets(fun(W,_) -> Fun(W) end, ok, State),
+%% iterate through all widgets, but skip windows
+each_widget(Fun) ->
+    fold_widgets(fun(W,_) when W#widget.type =/= window -> 
+			 Fun(W);
+		    (_W,Acc) ->
+			 Acc
+		 end, ok),
     ok.
 
+%% fold over windows
 fold_windows(Fun, Acc, State) ->
     sets:fold(fun(Wid,Acc1) ->
-		      W = dict:fetch(Wid, State#state.widgets),
-		      Fun(W, Acc1)
+		      Fun(widget_fetch(Wid), Acc1)
 	      end, Acc, State#state.wset).
 
+%% iterate over all windows
 each_window(Fun, State) ->
     fold_windows(fun(Win,_) -> Fun(Win) end, ok, State),
     ok.
-
 
 clear_window(Win) ->
     epx:pixmap_fill(Win#widget.image, Win#widget.color).
@@ -1008,15 +984,11 @@ unmap_window(Win) ->
     epx:window_detach(Win#widget.win),
     epx:pixmap_detach(Win#widget.backing).
 
-
-%%
-%% TODO: menu border/offset/scale/background
-%%
 draw_widget(W, Win) ->
     case W#widget.type of
 	window ->
 	    %% do not draw (yet), we may use this
-	    %% to draw embedded windows in the future
+	    %% to draw multiple/embedded windows in the future
 	    ok;
 
 	panel ->
@@ -1029,24 +1001,27 @@ draw_widget(W, Win) ->
 					 W#widget.x, W#widget.y,
 					 W#widget.width, W#widget.height)
 	      end);
+
 	button ->
 	    epx_gc:draw(
 	      fun() ->
 		      draw_text_box(Win, W, W#widget.text)
 	      end);
+
 	switch ->
 	    epx_gc:draw(
 	      fun() ->
 		      draw_text_box(Win, W, W#widget.text)
 	      end);
+
 	slider ->
-	    %% Fixme: draw & handle horizontal / vertical 
 	    epx_gc:draw(
 	      fun() ->
 		      draw_background(Win, W),
 		      draw_border(Win, W, W#widget.border),
 		      draw_value_bar(Win, W, W#widget.topimage)
 	      end);
+
 	value ->
 	    epx_gc:draw(
 	      fun() ->
@@ -1068,11 +1043,13 @@ draw_widget(W, Win) ->
 			  end,
 		      draw_text_box(Win, W, Text)
 	      end);
+
 	rectangle ->
 	    epx_gc:draw(
 	      fun() ->
 		      draw_background(Win, W)
 	      end);
+
 	ellipse ->
 	    epx_gc:draw(
 	      fun() ->
@@ -1082,6 +1059,7 @@ draw_widget(W, Win) ->
 				       W#widget.x, W#widget.y,
 				       W#widget.width, W#widget.height)
 	      end);
+
 	line ->
 	    epx_gc:draw(
 	      fun() ->	
@@ -1091,11 +1069,7 @@ draw_widget(W, Win) ->
 				    W#widget.x+W#widget.width-1,
 				    W#widget.y+W#widget.height-1)
 	      end);
-	image ->
-	    epx_gc:draw(
-	      fun() ->
-		      draw_background(Win, W)
-	      end);
+
 	text ->
 	    epx_gc:draw(
 	      fun() ->
@@ -1145,67 +1119,163 @@ draw_background(Win, W) ->
        Min =/= undefined, Max =/= undefined ->
 	    draw_split_background(Win, W);
        true ->
-	    #widget {color = Color, image = Image, animation = Anim} = W,
+	    #widget {color = Color, image = Image, animation = Anim,
+		     frame = Frame } = W,
 	    draw_one_background(Win, W, X, Y, Width, Height, 
-				Color, Image, Anim)
+				1, Color, Image, Anim, Frame)
     end.
 
 draw_split_background(Win, W=#widget {orientation = horizontal}) ->
     #widget {value = Value, width=Width, height=Height, x=X, y=Y} = W,
-    #widget {color = Color, image = Image, animation = Anim} = W,
-    #widget {color2 = Color2, image2 = Image2, animation2 = Anim2} = W,
+    #widget {color = Color, image = Image, 
+	     animation = Anim, frame = Frame} = W,
+    #widget {color2 = Color2, image2 = Image2, 
+	     animation2 = Anim2, frame2 = Frame2} = W,
     R = value_proportion(W),
     draw_one_background(Win, W, X, Y, 
 			trunc(R*Width), Height, 
-			Color, Image, Anim),
+			1, Color, Image, Anim, Frame),
     draw_one_background(Win, W, X + trunc(R*Width), Y,
 			Width - trunc(R*Width), Height, 
-			Color2, Image2, Anim2);
+			2, Color2, Image2, Anim2, Frame2);
 draw_split_background(Win, W=#widget {orientation = vertical}) ->
     #widget {value=Value, width=Width, height=Height, x=X, y=Y} = W,
-    lager:debug("drawing background, value ~p", [Value]),
-    #widget {color = Color, image = Image, animation = Anim} = W,
-    #widget {color2 = Color2, image2 = Image2, animation2 = Anim2} = W,
+    %% lager:debug("drawing background, value ~p", [Value]),
+    #widget {color = Color, image = Image,
+	     animation = Anim, frame = Frame } = W,
+    #widget {color2 = Color2, image2 = Image2,
+	     animation2 = Anim2, frame2 = Frame2} = W,
     R = value_proportion(W),
     Y0 = Y + Height - 1,
     %% Bottom part
-    draw_one_background(Win, W, X, trunc(Y0*(1-R) + Y*R), 
-			Width, trunc(R*(Y0-Y)) + 1, 
-			Color, Image, Anim),
+    draw_one_background(Win, W, X, trunc(Y0*(1-R) + Y*R),
+			Width, trunc(R*(Y0-Y)) + 1,
+			1, Color, Image, Anim, Frame),
     %% Top part
-    draw_one_background(Win, W, X, Y, 
-			Width, trunc((1-R)*(Y0-Y)), 
-			Color2, Image2, Anim2).
+    draw_one_background(Win, W, X, Y,
+			Width, trunc((1-R)*(Y0-Y)),
+			2, Color2, Image2, Anim2, Frame2).
 
-   
-draw_one_background(Win, W, X, Y, Width, Height, Color, Image, Anim) ->
+draw_one_background(Win,W,X,Y,Width,Height,N,Color,Image,Anim,Frame) ->
     epx_gc:set_fill_style(W#widget.fill),
     set_color(W, Color),
     epx:draw_rectangle(Win#widget.image, X, Y, Width, Height),
     
     if is_record(Image, epx_pixmap) ->
-	    lager:debug("drawing image ~p", [Image]),
-	    Width = epx:pixmap_info(Image,width),
-	    Height = epx:pixmap_info(Image,height),
-	    epx:pixmap_copy_area(Image,
-				 Win#widget.image,
-				 0, 0, X, Y, Width, Height,
-				 [blend]);
+	    %% lager:debug("drawing image ~p", [Image]),
+	    IWidth  = epx:pixmap_info(Image,width),
+	    IHeight = epx:pixmap_info(Image,height),
+	    if IWidth =:= Width, IHeight =:= Height ->
+		    epx:pixmap_copy_area(Image,
+					 Win#widget.image,
+					 0, 0, X, Y, Width, Height,
+					 [blend]);
+	       true ->
+		    epx:pixmap_scale_area(Image,
+					  Win#widget.image,
+					  0, 0, X, Y,
+					  IWidth, IHeight,
+					  Width, Height,
+					  [blend])
+	    end;
        true ->
 	    ok
     end,
     if is_record(Anim, epx_animation) ->
-	    lager:debug("drawing animation ~p", [Anim]),
+	    %% lager:debug("drawing animation ~p", [Anim]),
+	    AWidth  = epx:animation_info(Anim,width),
+	    AHeight = epx:animation_info(Anim,height),
 	    Count = epx:animation_info(Anim, count),
-	    Frame = clamp(W#widget.frame, 0, Count-1),
-	    %% fixme: handle count=0, frame=undefined,
-	    %% fixe scaling
-	    epx:animation_draw(Anim, round(Frame),
-			       Win#widget.image, epx_gc:current(),
-			       X,Y);
+	    Frame0 = if is_number(Frame) -> Frame;
+			true -> 0
+		     end,
+	    Frame1 = clamp(Frame0, 0, Count-1),
+	    %% lager:debug("draw frame: ~w", [Frame1]),
+	    if AWidth =:= Width, AHeight =:= Height ->
+		    epx:animation_draw(Anim, round(Frame1),
+				       Win#widget.image, epx_gc:current(),
+				       X,Y);
+	       true ->
+		    AFormat = epx:animation_info(Anim,pixel_format),
+		    TmpImage = create_tmp_pixmap(AFormat,AWidth,AHeight),
+		    epx:animation_draw(Anim, round(Frame1),
+				       TmpImage, epx_gc:current(),
+				       0,0),
+		    epx:pixmap_scale_area(TmpImage,
+					  Win#widget.image,
+					  0, 0, X, Y,
+					  AWidth, AHeight,
+					  Width, Height,
+					  [blend])
+	    end,
+	    %% fixme: animation step?
+	    update_animation(W, N, Frame0+1, Count);
        true ->
 	    ok
     end.
+
+update_animation(W, 1, Frame, Count) ->
+    case W#widget.animate of
+	continuous ->
+	    put(animations, true),
+	    widget_store(W#widget { frame = fmod(Frame,Count)});
+	sequence ->
+	    if Frame >= Count ->
+		    widget_store(W#widget { animate = undefined });
+	       true ->
+		    put(animations, true),
+		    widget_store(W#widget { frame = Frame})
+	    end;
+	undefined ->
+	    W
+    end;
+update_animation(W, 2, Frame, Count) ->
+    case W#widget.animate2 of
+	continuous ->
+	    put(animations, true),
+	    widget_store(W#widget { frame2 = fmod(Frame, Count) });
+	sequence ->
+	    if Frame >= Count ->
+		    widget_store(W#widget { animate2 = undefined });
+	       true ->
+		    put(animations, true),
+		    widget_store(W#widget { frame2 = Frame})
+	    end;
+	undefined ->
+	    W
+    end.
+
+
+fmod(A, B) when is_integer(A), is_integer(B), B =/= 0 ->
+    A rem B;
+fmod(A, B) when is_number(A), is_number(B), B =/= 0 ->
+    AB = abs(A / B),
+    C = (AB - trunc(AB))*abs(B),
+    if A < 0 -> -C;
+       true -> C
+    end.    
+    
+
+%% A bit ugly but may be efficient?
+create_tmp_pixmap(Format, Width, Height) ->
+    Pixmap =
+	case get(tmp_pixmap) of
+	    undefined ->
+		epx:pixmap_create(Width, Height, Format);
+	    Pixmap0 ->
+		F = epx:pixmap_info(Pixmap0,pixel_format),
+		W  = epx:pixmap_info(Pixmap0,width),
+		H = epx:pixmap_info(Pixmap0,height),
+		if Format =:= F, Width =< W, Height =< H ->
+			Pixmap0;
+		   true ->
+			epx:pixmap_create(Width, Height, Format)
+		end
+	end,
+    epx:pixmap_fill(Pixmap, 0),
+    put(tmp_pixmap, Pixmap),
+    Pixmap.
+
     
 draw_border(_Win, _W, undefined) ->
     ok;
@@ -1260,14 +1330,17 @@ draw_topimage(Win, W, TopImage, R) ->
     Height = epx:pixmap_info(TopImage,height),
     {X, Y} = case W#widget.orientation of
 		 horizontal ->
-		     {trunc(W#widget.x + R*((W#widget.width-Width)-1)),
-		      W#widget.y + W#widget.height div 2 - Height div 2};
+		     X0 = W#widget.x,
+		     X1 = W#widget.x + W#widget.width - 1,
+		     Xv = trunc(X0*(1-R) + X1*R),
+		     {Xv - (Width div 2),
+		      W#widget.y + (W#widget.height- Height) div 2};
 		 vertical ->
 		     Y0 = W#widget.y + W#widget.height - 1,
 		     Y1 = W#widget.y,
 		     Yv = trunc(Y0*(1-R) + Y1*R),
-		     {W#widget.x + W#widget.width div 2 - Width div 2,
-		      (Yv - Width div 2)}
+		     {W#widget.x + (W#widget.width - Width) div 2,
+		      (Yv - (Height div 2))}
 	     end,
     epx:pixmap_copy_area(TopImage,
 			 Win#widget.image,
@@ -1296,15 +1369,11 @@ draw_value_marker(Win, W, R) ->
 
 %% set foreground / fillcolor also using animatation state
 set_color(W, Color0) ->
-    Color = case W#widget.animate of
-		{color,{add,AColor}} ->
-		    color_add(Color0, AColor);
-		{color,{sub,AColor}} ->
-		    color_sub(Color0, AColor);
-		{color,{interpolate,V,AColor}} ->
-		    %% color from AColor -> W#widget.color
-		    color_interpolate(V, AColor, Color0);
-		_ -> Color0
+    Color = case W#widget.state of 
+		active ->
+		    color_sub(Color0, 16#00333333);  %% darken color when active
+		_ ->
+		    Color0
 	    end,
     epx_gc:set_foreground_color(Color),
     epx_gc:set_fill_color(Color).
@@ -1361,5 +1430,3 @@ clamp(undefined,Min,Max) ->
 clamp(V,Min,undefined) when is_number(Min), V < Min -> Min;
 clamp(V,undefined,Max) when is_number(Max), V > Max -> Max;
 clamp(V,_,_) -> V.
-
-
