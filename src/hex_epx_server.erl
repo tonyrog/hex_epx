@@ -31,6 +31,8 @@
 -export([add_event/3, mod_event/2, del_event/1]).
 -export([init_event/2, output_event/2]).
 
+-export([color_add/2, color_interpolate/3, color_add_argb/2, 
+	 color_interpolate_argb/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -603,6 +605,7 @@ topimage_at_location(W=#widget {orientation = vertical},X,Y,Image) ->
     (Y >= W#widget.y) andalso (Y < W#widget.y + W#widget.height) andalso
 	(X >= X1) andalso (X =< X2).
 
+-ifdef(not_used).
 image_at_location(_W,_X,_Y,undefined) ->
     false;
 image_at_location(W,X,Y,Image) ->
@@ -615,7 +618,9 @@ image_at_location(W,X,Y,Image) ->
        true ->
 	    false
     end.
+-endif.
 
+-ifdef(not_used).
 animation_at_location(_W,_X,_Y,undefined) ->
     false;
 animation_at_location(W,X,Y,Anim) ->
@@ -628,6 +633,7 @@ animation_at_location(W,X,Y,Anim) ->
        true ->
 	    false
     end.
+-endif.
       
 
 %% generate a callback event and start animate the button
@@ -1126,7 +1132,7 @@ draw_background(Win, W) ->
     end.
 
 draw_split_background(Win, W=#widget {orientation = horizontal}) ->
-    #widget {value = Value, width=Width, height=Height, x=X, y=Y} = W,
+    #widget {width=Width, height=Height, x=X, y=Y} = W,
     #widget {color = Color, image = Image, 
 	     animation = Anim, frame = Frame} = W,
     #widget {color2 = Color2, image2 = Image2, 
@@ -1139,8 +1145,7 @@ draw_split_background(Win, W=#widget {orientation = horizontal}) ->
 			Width - trunc(R*Width), Height, 
 			2, Color2, Image2, Anim2, Frame2);
 draw_split_background(Win, W=#widget {orientation = vertical}) ->
-    #widget {value=Value, width=Width, height=Height, x=X, y=Y} = W,
-    %% lager:debug("drawing background, value ~p", [Value]),
+    #widget {width=Width, height=Height, x=X, y=Y} = W,
     #widget {color = Color, image = Image,
 	     animation = Anim, frame = Frame } = W,
     #widget {color2 = Color2, image2 = Image2,
@@ -1281,7 +1286,7 @@ draw_border(_Win, _W, undefined) ->
     ok;
 draw_border(_Win, _W, 0) ->
     ok;
-draw_border(Win, W, Border) ->
+draw_border(Win, W, _Border) ->
     %% fixme: calculate size from border thickness
     epx_gc:set_foreground_color(16#00000000),
     epx_gc:set_fill_style(none),
