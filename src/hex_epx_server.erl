@@ -63,6 +63,7 @@
 	  width  = 32 :: non_neg_integer(),
 	  height = 32 :: non_neg_integer(),
 	  text = "",
+	  tabs = [],
 	  border  :: number(),
 	  orientation = horizontal :: horizontal|vertical,
 	  image   :: epx:epx_pixmap(),
@@ -766,6 +767,8 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{height=Height});
 	{text,Text} when is_list(Text) ->
 	    widget_set(Flags, W#widget{text=Text});
+	{tabs,Tabs} when is_list(Tabs) ->
+	    widget_set(Flags, W#widget{tabs=Tabs});
 	{border, Border} when is_integer(Border) ->
 	    widget_set(Flags, W#widget{border=Border});
 	{orientation, O} when is_atom(O) ->
@@ -992,14 +995,10 @@ draw_widget(W, Win) ->
 	    ok;
 
 	panel ->
-	    %% draw tabs according halign, valign
 	    epx_gc:draw(
 	      fun() ->
-		      epx_gc:set_fill_style(W#widget.fill),
-		      set_color(W, W#widget.color),
-		      epx:draw_rectangle(Win#widget.image,
-					 W#widget.x, W#widget.y,
-					 W#widget.width, W#widget.height)
+		      draw_background(Win, W),
+		      draw_tabs(Win, W)
 	      end);
 
 	button ->
@@ -1084,26 +1083,72 @@ draw_text_box(Win, W, Text) ->
     draw_background(Win, W),
     if is_list(Text), Text =/= "" ->
 	    Font = W#widget.font,
-	    epx_gc:set_font(W#widget.font),
+	    epx_gc:set_font(Font),
+	    Ascent = epx:font_info(Font, ascent),
 	    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
-	    {TxW,TxH} =epx_font:dimension(epx_gc:current(), Text),
-	    Xd = case W#widget.halign of
-		     left  -> 0;
-		     right -> W#widget.width - TxW;
-		     center -> (W#widget.width-TxW) div 2
-		 end,
-	    Yd = case W#widget.valign of
-		     top -> 0;
-		     bottom -> W#widget.height - TxH;
-		     center -> (W#widget.height-TxH) div 2
-		 end,
-	    %% draw centered text
-	    X = W#widget.x + Xd,
-	    Y = W#widget.y + Yd + epx:font_info(Font, ascent),
-	    epx:draw_string(Win#widget.image, X, Y, Text);
+	    {TxW,TxH} = epx_font:dimension(epx_gc:current(), Text),
+	    draw_text(Win, Ascent, Text, TxW, TxH, 
+		      W#widget.x, W#widget.y, 
+		      W#widget.width, W#widget.height,
+		      W#widget.halign, W#widget.valign);
        true ->
 	    ok
     end.
+
+%% 
+%%  Put tabs as a row (horizontal) 
+%%  or column (vertical)
+%%
+draw_tabs(Win, W) ->
+    Font = W#widget.font,
+    epx_gc:set_font(Font),
+    Ascent = epx:font_info(Font, ascent),
+    TextDims = [ {epx_font:dimension(epx_gc:current(), Text),Text} || 
+		   Text <- W#widget.tabs ],
+    MaxW = lists:max([W || {{W,_},_} <- TextDims]),
+    MaxH = lists:max([H || {{_,H},_} <- TextDims]),
+    N = length(TextDims),
+    Width =  (MaxW+8),
+    Height = (MaxH+4),
+    %% horizontal case
+    X0 = (W#widget.width - (Width*N)) div 2,
+    Y0 = (W#widget.y + 5),
+    set_color(W, 16#ffcccccc),
+    epx_gc:set_fill_style(solid),
+    epx:draw_rectangle(Win#widget.image, X0, Y0, Width*N, Height),
+    draw_tabs(Win, W, Ascent, TextDims, X0, Y0, Width, Height,
+	      W#widget.halign, W#widget.valign).
+
+draw_tabs(Win, W, Ascent, [{{TxW,TxH},Text}|TextDims],
+	  Xi, Yi, Width, Height, Halign, Valign) ->
+    epx_gc:set_foreground_color(16#00000000),
+    epx_gc:set_fill_style(none),
+    epx:draw_rectangle(Win#widget.image, Xi, Yi, Width, Height),
+    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
+    draw_text(Win, Ascent, Text, TxW, TxH, Xi, Yi,
+	      Width, Height, Halign, Valign),
+    draw_tabs(Win, W, Ascent, TextDims,
+	      Xi+Width, Yi, Width, Height, Halign, Valign);
+draw_tabs(_Win, _W, _Ascent, [], 
+	  Xi, _Yi, _Width, _Height, _Halign, _Valign) ->
+    Xi.
+    
+    
+draw_text(Win, Ascent, Text, TxW, TxH, X, Y, Width, Height, Halign, Valign) ->
+    Xd = case Halign of
+	     left  -> 0;
+	     right -> Width - TxW;
+	     center -> (Width-TxW) div 2
+	 end,
+    Yd = case Valign of
+	     top -> 0;
+	     bottom -> Height - TxH;
+	     center -> (Height-TxH) div 2
+	 end,
+    %% draw aligned text
+    X1 = X + Xd,
+    Y1 = Y + Yd + Ascent,
+    epx:draw_string(Win#widget.image, X1, Y1, Text).
 
 
 draw_background(Win, W) ->
