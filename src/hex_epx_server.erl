@@ -1111,8 +1111,8 @@ draw_tabs(Win, W) ->
     Ascent = epx:font_info(Font, ascent),
     TextDims = [ {epx_font:dimension(epx_gc:current(), Text),Text} || 
 		   Text <- W#widget.tabs ],
-    MaxW = lists:max([W || {{W,_},_} <- TextDims]),
-    MaxH = lists:max([H || {{_,H},_} <- TextDims]),
+    MaxW = lists:max([Wi || {{Wi,_},_} <- TextDims]),
+    MaxH = lists:max([Hi || {{_,Hi},_} <- TextDims]),
     N = length(TextDims),
     Width =  (MaxW+8),
     Height = (MaxH+4),
