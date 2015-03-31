@@ -117,6 +117,13 @@
 	  %% widgets :: ?DICT_T   %% term => #widget{}
 	 }).
 
+
+-define(TABS_X_OFFSET, 10).  %% should scale with size!
+-define(TABS_Y_OFFSET, 10).  %% should scale with size!
+-define(TABS_X_PAD, 16).      %% should scale with font size!
+-define(TABS_Y_PAD, 8).      %% should scale with font size!
+-define(TABS_COLOR, 16#ffcccccc).  %% configure this
+
 add_event(Flags, Signal, Cb) ->
     gen_server:call(?MODULE, {add_event, self(), Flags, Signal, Cb}).
 
@@ -572,21 +579,66 @@ handle_event(_Event,_W,State) ->
 widgets_at_location(X,Y,WinID) ->
     Ws = fold_widgets(
 	   fun(W,Acc) when W#widget.window =:= WinID ->
-		   if X >= W#widget.x, X < W#widget.x + W#widget.width,
-		      Y >= W#widget.y, Y < W#widget.y + W#widget.height ->
-			   [W|Acc];
-		      true ->
-			   case topimage_at_location(W,X,Y,W#widget.topimage) of
-			       true -> 
+		   case W#widget.type of
+		       panel ->
+			   case tab_at_location(W,X,Y) of
+			       0 -> Acc;
+			       _Tab -> 
+				   io:format("tab at (~w,~w) = ~w\n",
+					     [X,Y,_Tab]),
+				   [W|Acc]
+			   end;
+		       _ ->
+			   case in_bounding_box(W, X, Y) of
+			       true ->
 				   [W|Acc];
 			       false ->
-				   Acc
+				   case topimage_at_location(W,X,Y,
+							     W#widget.topimage) of
+				       true ->
+					   [W|Acc];
+				       false ->
+					   Acc
+				   end
 			   end
 		   end;
 	      (_,Acc) -> Acc
 	   end, []),
     %% sort according to Z order
     lists:sort(fun(A,B) -> A#widget.z > B#widget.z end, Ws).
+
+%% Check if (X,Y) is within any of the panel tabs
+tab_at_location(W,X,Y) ->
+    {_Ascent,TextDims,MaxW,MaxH} = tabs_item_box(W),
+    N = length(TextDims),
+    Width =  (MaxW+?TABS_X_PAD),
+    Height = (MaxH+?TABS_Y_PAD),
+    case W#widget.orientation of
+	horizontal ->
+	    Xoffs = (W#widget.width - (Width*N)) div 2,
+	    X0 = W#widget.x + Xoffs,
+	    Y0 = W#widget.y + ?TABS_Y_OFFSET,
+	    case in_rect(X,Y,X0,Y0,Width*N,Height) of
+		false -> 0;
+		true  -> ((X-Xoffs) div Width)+1
+	    end;
+	vertical ->
+	    Yoffs = (W#widget.height - (Height*N)) div 2,
+	    Y0 = W#widget.y + Yoffs,
+	    X0 = W#widget.x + ?TABS_X_OFFSET,
+	    case in_rect(X,Y,X0,Y0,Width,Height*N) of
+		false -> 0;
+		true -> ((Y-Yoffs) div Height)+1
+	    end
+    end.
+
+in_bounding_box(W, X, Y) ->
+    in_rect(X,Y,W#widget.x,W#widget.y, W#widget.width, W#widget.height).
+
+in_rect(X,Y,Xr,Yr,Wr,Hr) ->
+    if X >= Xr, X < Xr + Wr, Y >= Yr, Y < Yr + Hr -> true;
+       true -> false
+    end.
     
 %%
 %% Check if (X,Y) hit inside a topimage (used in slider)
@@ -663,6 +715,17 @@ widget_event({button_press,_Button,Where}, W, Window, State) ->
 		    epx:window_enable_events(Window#widget.win, [motion]),
 		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
 		    W#widget { state=active, value = Value }
+	    end;
+	panel ->
+	    {X,Y,_} = Where,
+	    case tab_at_location(W,X,Y) of
+		0 ->
+		    lager:debug("panel box select error"),
+		    W;
+		Value ->
+		    io:format("tab at (~w,~w) = ~w\n", [X,Y,Value]),
+		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
+		    W#widget { value = Value }
 	    end;
 	_ ->
 	    W
@@ -1106,38 +1169,86 @@ draw_text_box(Win, W, Text) ->
 %%  or column (vertical)
 %%
 draw_tabs(Win, W) ->
+    {Ascent,TextDims,MaxW,MaxH} = tabs_item_box(W),
+    N = length(TextDims),
+    Width =  (MaxW+?TABS_X_PAD),
+    Height = (MaxH+?TABS_Y_PAD),
+    case W#widget.orientation of
+	horizontal ->
+	    X0 = W#widget.x + (W#widget.width - (Width*N)) div 2,
+	    Y0 = (W#widget.y + ?TABS_Y_OFFSET),
+	    set_color(W, ?TABS_COLOR),
+	    epx_gc:set_fill_style(solid),
+	    epx:draw_rectangle(Win#widget.image, X0, Y0, Width*N, Height),
+	    draw_h_tabs(Win, W, 1, Ascent, TextDims, X0, Y0, Width, Height,
+			W#widget.halign, W#widget.valign);
+	vertical ->
+	    Y0 =  W#widget.y + (W#widget.height - (Height*N)) div 2,
+	    X0 = (W#widget.x + ?TABS_X_OFFSET),
+	    set_color(W, ?TABS_COLOR),
+	    epx_gc:set_fill_style(solid),
+	    epx:draw_rectangle(Win#widget.image, X0, Y0, Width, Height*N),
+	    draw_v_tabs(Win, W, 1, Ascent, TextDims, X0, Y0, Width, Height,
+			W#widget.halign, W#widget.valign)
+    end.
+
+tabs_item_box(W) ->
     Font = W#widget.font,
     epx_gc:set_font(Font),
     Ascent = epx:font_info(Font, ascent),
+    Tabs = W#widget.tabs,
     TextDims = [ {epx_font:dimension(epx_gc:current(), Text),Text} || 
-		   Text <- W#widget.tabs ],
+		   Text <- Tabs ],
     MaxW = lists:max([Wi || {{Wi,_},_} <- TextDims]),
     MaxH = lists:max([Hi || {{_,Hi},_} <- TextDims]),
-    N = length(TextDims),
-    Width =  (MaxW+8),
-    Height = (MaxH+4),
-    %% horizontal case
-    X0 = (W#widget.width - (Width*N)) div 2,
-    Y0 = (W#widget.y + 5),
-    set_color(W, 16#ffcccccc),
-    epx_gc:set_fill_style(solid),
-    epx:draw_rectangle(Win#widget.image, X0, Y0, Width*N, Height),
-    draw_tabs(Win, W, Ascent, TextDims, X0, Y0, Width, Height,
-	      W#widget.halign, W#widget.valign).
+    {Ascent,TextDims,MaxW,MaxH}.
 
-draw_tabs(Win, W, Ascent, [{{TxW,TxH},Text}|TextDims],
-	  Xi, Yi, Width, Height, Halign, Valign) ->
+
+draw_h_tabs(Win, W, I, Ascent, [{{TxW,TxH},Text}|TextDims],
+	    Xi, Yi, Width, Height, Halign, Valign) ->
+    %% darken selected field
+    if I =:= W#widget.value ->
+	    Color = color_sub(?TABS_COLOR, 16#00333333),
+	    epx_gc:set_fill_color(Color),
+	    epx_gc:set_fill_style(solid),
+	    epx:draw_rectangle(Win#widget.image, Xi, Yi, Width, Height);
+       true ->
+	    ok
+    end,
     epx_gc:set_foreground_color(16#00000000),
     epx_gc:set_fill_style(none),
     epx:draw_rectangle(Win#widget.image, Xi, Yi, Width, Height),
     epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
     draw_text(Win, Ascent, Text, TxW, TxH, Xi, Yi,
 	      Width, Height, Halign, Valign),
-    draw_tabs(Win, W, Ascent, TextDims,
+    draw_h_tabs(Win, W, I+1, Ascent, TextDims,
 	      Xi+Width, Yi, Width, Height, Halign, Valign);
-draw_tabs(_Win, _W, _Ascent, [], 
+draw_h_tabs(_Win, _W, _I, _Ascent, [], 
 	  Xi, _Yi, _Width, _Height, _Halign, _Valign) ->
     Xi.
+
+draw_v_tabs(Win, W, I, Ascent, [{{TxW,TxH},Text}|TextDims],
+	    Xi, Yi, Width, Height, Halign, Valign) ->
+    %% darken selected field
+    if I =:= W#widget.value ->
+	    Color = color_sub(?TABS_COLOR, 16#00333333),
+	    epx_gc:set_fill_color(Color),
+	    epx_gc:set_fill_style(solid),
+	    epx:draw_rectangle(Win#widget.image, Xi, Yi, Width, Height);
+       true ->
+	    ok
+    end,
+    epx_gc:set_foreground_color(16#00000000),
+    epx_gc:set_fill_style(none),
+    epx:draw_rectangle(Win#widget.image, Xi, Yi, Width, Height),
+    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
+    draw_text(Win, Ascent, Text, TxW, TxH, Xi, Yi,
+	      Width, Height, Halign, Valign),
+    draw_v_tabs(Win, W, I+1, Ascent, TextDims,
+		Xi, Yi+Height, Width, Height, Halign, Valign);
+draw_v_tabs(_Win, _W, _I, _Ascent, [], 
+	    _Xi, Yi, _Width, _Height, _Halign, _Valign) ->
+    Yi.
     
     
 draw_text(Win, Ascent, Text, TxW, TxH, X, Y, Width, Height, Halign, Valign) ->
