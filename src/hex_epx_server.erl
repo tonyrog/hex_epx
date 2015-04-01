@@ -44,9 +44,11 @@
 -define(SERVER, ?MODULE).
 -define(DICT_T, term()).  %% dict:dict()
 -define(SETS_T, term()).  %% sets:set()
+-define(ETS_T,  term()).  %% table()?
 
 -define(DEFAULT_WIDTH,  320).
 -define(DEFAULT_HEIGHT, 240).
+-define(DEFAULT_WINDOW_ID, "screen").
 
 -define(MAX_TICKS, 16#ffffffff).  %% about 49.7 days
 
@@ -54,11 +56,11 @@
 
 -record(widget,
 	{
-	  id,                %% named widgets
-	  type,              %% button,rectangle,slider ...
-	  window,            %% id of base window (if type != window)
-	  state  = normal,   %% or active,selected,closed ..
-	  static = false,    %% object may not be deleted
+	  id :: string(),     %% (structured) name of widget
+	  type,               %% button,rectangle,slider ...
+	  window :: string(), %% id of base window (if type != window)
+	  state  = normal,    %% or active,selected,closed ..
+	  static = false,     %% object may not be deleted
 	  x = 0   :: integer(),
 	  y = 0   :: integer(),
 	  z = 0   :: integer(),   %% define the order for overlap
@@ -97,7 +99,7 @@
 	{
 	  ref :: reference(),
 	  mon :: reference(),
-	  id  :: term(),
+	  id  :: string(),
 	  callback :: atom() | function(),
 	  signal :: term()
 	}).
@@ -112,7 +114,8 @@
 	  clock :: reference(),         %% clock reference
 	  redraw_tick :: number(),      %% aprox redraw clock
 	  default_font :: epx:epx_font(),
-	  wset    :: ?SETS_T            %% set of window id
+	  wset    :: ?SETS_T,           %% set of window id
+	  wtree   :: ?ETS_T             %% ets_tree of all widgets
 	  %% widgets are now stored in process dictionary
 	  %% widgets :: ?DICT_T   %% term => #widget{}
 	 }).
@@ -123,6 +126,8 @@
 -define(TABS_X_PAD, 16).      %% should scale with font size!
 -define(TABS_Y_PAD, 8).      %% should scale with font size!
 -define(TABS_COLOR, 16#ffcccccc).  %% configure this
+
+-define(EOT, '$end_of_table').
 
 add_event(Flags, Signal, Cb) ->
     gen_server:call(?MODULE, {add_event, self(), Flags, Signal, Cb}).
@@ -204,7 +209,7 @@ init(Args) ->
 	    false -> undefined;
 	    {ok,F} -> F
 	end,
-    Default = window_create([{id,screen},
+    Default = window_create([{id,?DEFAULT_WINDOW_ID},
 			     {static,true},
 			     {x,50},{y,50},
 			     {width,Width},{height,Height},
@@ -214,6 +219,8 @@ init(Args) ->
 				       %% crossing, motion
 				       button,wheel]},
 			     {color, 16#ffffffff}]),
+    Tree = ets_tree:new(wtree, []),
+    ets_tree:insert(Tree, {?DEFAULT_WINDOW_ID,?DEFAULT_WINDOW_ID}),
     self() ! refresh,
     %% This clock will run for 49,71 days before timeout, but we
     %% use it as a cheap? clock source.
@@ -223,7 +230,8 @@ init(Args) ->
 		 default_font = Font,
 		 fps = Fps,
 		 clock = Clock,
-		 wset = sets:from_list([Default#widget.id])
+		 wset = sets:from_list([Default#widget.id]),
+		 wtree = Tree
 	       }}.
 
 %%--------------------------------------------------------------------
@@ -241,7 +249,7 @@ init(Args) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_call({add_event,Pid,Flags,Signal,Cb}, _From, State) ->
-    case lists:keyfind(id, 1, Flags) of
+    case find_id(Flags) of
 	false ->
 	    {reply,{error,missing_id},State};
 	{id,ID} ->
@@ -259,7 +267,7 @@ handle_call({del_event,Ref}, _From, State) ->
 	    {reply, ok, State#state { subs=Subs} }
     end;
 handle_call({output_event,Flags,Env}, _From, State) ->
-    case lists:keyfind(id, 1, Flags) of
+    case find_id(Flags) of
 	false ->
 	    {reply,{error,missing_id},State};
 	{id,ID} ->
@@ -279,22 +287,28 @@ handle_call({output_event,Flags,Env}, _From, State) ->
 	    end
     end;
 handle_call({init_event,_Dir,Flags}, _From, State) ->
-    case lists:keyfind(id, 1, Flags) of
+    case find_id(Flags) of
 	false ->
 	    {reply,{error,missing_id},State};
 	{id,ID} ->
 	    case widget_find(ID) of
 		error ->
-		    W0 = #widget{font=State#state.default_font},
+		    W0 = #widget{ font=State#state.default_font },
 		    try widget_set(Flags,W0) of
 			W1 ->
 			    W2 =
 				if W1#widget.type =/= window,
 				   W1#widget.window =:= undefined ->
-					W1#widget { window = screen };
+					W1#widget { window=?DEFAULT_WINDOW_ID};
 				   true ->
 					W1
 				end,
+			    Y = if W2#widget.type =:= window ->
+					W2#widget.id;
+				   true ->
+					W2#widget.window++"."++W2#widget.id
+				end,
+			    ets_tree:insert(State#state.wtree,{Y,W2#widget.id}),
 			    widget_store(W2),
 			    self() ! refresh,
 			    {reply, ok, State}
@@ -417,7 +431,7 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, State) ->
-    each_window(fun unmap_window/1, State),
+    fold_windows(fun unmap_window/2, State, State),
     ok.
 
 %%--------------------------------------------------------------------
@@ -434,9 +448,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-widget_list() ->
-    [W || {_,W} <- erlang:get(), is_record(W, widget)].
 
 widget_store(W) ->
     put(W#widget.id, W),
@@ -459,7 +470,7 @@ widget_find(ID) ->
     end.
 
 widget_lookup(Flags) ->
-    case lists:keyfind(id, 1, Flags) of
+    case find_id(Flags) of
 	false ->
 	    {error,missing_id};
 	{id,ID} ->
@@ -481,11 +492,12 @@ handle_event(Event={button_press,Button,{X,Y,_}},Window,State) ->
 	true ->
 	    %% locate an active widget at position (X,Y)
 	    WinID = Window#widget.id,
-	    case widgets_at_location(X,Y,WinID) of
+	    lager:debug("Window = ~p\n", [WinID]),
+	    case widgets_at_location(X,Y,WinID,State) of
 		[] ->
 		    {noreply, State};
 		_Ws1=[W|_] ->
-		    %% lager:debug("selected ws=~p", [[W#widget.id||W<-_Ws1]]),
+		    lager:debug("selected ws=~p", [[Wi#widget.id||Wi<-_Ws1]]),
 		    case widget_event(Event, W, Window, State) of
 			W ->
 			    {noreply, State};
@@ -503,8 +515,6 @@ handle_event(Event={button_press,Button,{X,Y,_}},Window,State) ->
 handle_event(Event={button_release,Button,{_X,_Y,_}},Window,State) ->
     case lists:member(left,Button) of
 	true ->
-	    %% release "all" active widgets
-	    %% FIXME: multi touch
 	    State1 = 
 		lists:foldl(
 		  fun(ID, Si) ->
@@ -530,7 +540,7 @@ handle_event(Event={motion,Button,{X,Y,_}},Window,State) ->
 	true ->
 	    %% locate an active widget at position (X,Y)
 	    WinID = Window#widget.id,
-	    case widgets_at_location(X,Y,WinID) of
+	    case widgets_at_location(X,Y,WinID,State) of
 		[] ->
 		    {noreply, State};
 		[W|_] ->
@@ -562,7 +572,7 @@ handle_event(Event=close,Window,State) ->
     if Window#widget.static =:= true -> %% may not be deleted
 	    {noreply, State};
        true ->
-	    unmap_window(Window),
+	    unmap_window(Window,State),
 	    Window1 = widget_event(Event, Window, Window, State),
 	    State1 = widget_delete(Window1, State),
 	    self() ! refresh,
@@ -576,36 +586,74 @@ handle_event(_Event,_W,State) ->
 %% Find all widgets in window WinID that is hit by the
 %% point (X,Y). Return a Z sorted list
 %%
-widgets_at_location(X,Y,WinID) ->
-    Ws = fold_widgets(
-	   fun(W,Acc) when W#widget.window =:= WinID ->
-		   case W#widget.type of
-		       panel ->
-			   case tab_at_location(W,X,Y) of
-			       0 -> Acc;
-			       _Tab -> 
-				   io:format("tab at (~w,~w) = ~w\n",
-					     [X,Y,_Tab]),
-				   [W|Acc]
-			   end;
-		       _ ->
-			   case in_bounding_box(W, X, Y) of
-			       true ->
-				   [W|Acc];
-			       false ->
-				   case topimage_at_location(W,X,Y,
-							     W#widget.topimage) of
-				       true ->
-					   [W|Acc];
-				       false ->
-					   Acc
-				   end
-			   end
-		   end;
-	      (_,Acc) -> Acc
-	   end, []),
+widgets_at_location(X,Y,WinID,State) ->
+    Ws = select_tree(WinID,X,Y,[],State),
     %% sort according to Z order
-    lists:sort(fun(A,B) -> A#widget.z > B#widget.z end, Ws).
+    %% lists:sort(fun(A,B) -> A#widget.z > B#widget.z end, Ws).
+    lists:reverse(Ws).
+
+select_tree(?EOT,_X,_Y,Acc,_State) ->
+    Acc;
+select_tree(ID,X,Y,Acc,State) ->
+    ChildID = ets_tree:first_child(State#state.wtree, ID),
+    select_siblings(ChildID,X,Y,Acc,State).
+
+select_siblings(?EOT,_X,_Y,Acc,_State) ->
+    Acc;
+select_siblings(ID,X,Y,Acc,State) ->
+    Acc1 = select_one(ID,X,Y,Acc,true,State),
+    NextSibling = ets_tree:next_sibling(State#state.wtree, ID),
+    select_siblings(NextSibling,X,Y,Acc1,State).
+
+select_one(ID,X,Y,Acc,ChildrenFirst,State) ->
+    [{_,Wid}] = ets_tree:lookup(State#state.wtree,ID),
+    W = widget_fetch(Wid),
+    if ChildrenFirst ->
+	    Acc1 = select_children(W,ID,X,Y,Acc,State),
+	    select_widget(W,X,Y,Acc1,State);
+       true ->
+	    Acc1 = select_widget(W,X,Y,Acc,State),
+	    select_children(W,ID,X,Y,Acc1,State)
+    end.
+
+select_children(W,ID,X,Y,Acc,State) when W#widget.type =:= panel ->
+    case tab_at_location(W,X,Y) of
+	0 -> %% check in current tab
+	    V = W#widget.value,
+	    N = length(W#widget.tabs),
+	    if V =:= 0 ->
+		    %% no child selected
+		    Acc;
+	       V >= 1, V =< N ->
+		    Tab = lists:nth(V, W#widget.tabs),
+		    TabID = ID++[list_to_binary(Tab)],
+		    select_one(TabID,X,Y,Acc,false,State);
+	       true ->
+		    lager:error("panel tab ~w not defined in ~s\n",
+				[V,W#widget.id]),
+		    Acc
+	    end;
+	Tab ->
+	    io:format("tab at (~w,~w) = ~w\n", [X,Y,Tab]),
+	    [W|Acc]
+    end;
+select_children(_W,ID,X,Y,Acc,State) ->
+    select_tree(ID,X,Y,Acc,State).
+
+select_widget(W,X,Y,Acc,_State) ->
+    case in_bounding_box(W, X, Y) of
+	true ->
+	    [W|Acc];
+	false ->
+	    case topimage_at_location(W,X,Y,
+				      W#widget.topimage) of
+		true ->
+		    [W|Acc];
+		false ->
+		    Acc
+	    end
+    end.
+
 
 %% Check if (X,Y) is within any of the panel tabs
 tab_at_location(W,X,Y) ->
@@ -822,8 +870,8 @@ widget_set([Option|Flags], W) ->
     case Option of
 	{type,Type} when is_atom(Type) -> 
 	    widget_set(Flags, W#widget{type=Type});
-	{id,ID} when is_atom(ID); ?is_string(ID) -> 
-	    widget_set(Flags, W#widget{id=ID});
+	{id,ID} when is_atom(ID); is_list(ID) ->
+	    widget_set(Flags, W#widget{id=id_string(ID)});
 	{static,Bool} when is_boolean(Bool) -> 
 	    widget_set(Flags, W#widget{static=Bool});
 	{x,X} when is_integer(X) ->
@@ -840,8 +888,9 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{tabs=Tabs});
 	{border, Border} when is_integer(Border) ->
 	    widget_set(Flags, W#widget{border=Border});
-	{orientation, O} when is_atom(O) ->
-	    widget_set(Flags, W#widget{orientation = O});
+	{orientation, Orientation} when 
+	      Orientation =:= horizontal; Orientation =:= vertical ->
+	    widget_set(Flags, W#widget{orientation = Orientation });
 	{image,File} when is_list(File) ->
 	    case epx_image:load(hex:text_expand(File, [])) of
 		{ok,Image} ->
@@ -972,6 +1021,19 @@ widget_set([Option|Flags], W) ->
 widget_set([], W) ->
     W.
 
+%% find id among flags and convert tos string
+find_id(Flags) ->
+    case lists:keyfind(id, 1, Flags) of
+	false ->
+	    false;
+	{id,ID} -> {id,id_string(ID)}
+    end.
+
+id_string(X) when is_atom(X) ->
+    atom_to_list(X);
+id_string(X) when is_list(X) ->
+    X.
+
 redraw_schedule(State) ->
     if is_reference(State#state.redraw_timer) ->
 	    State;
@@ -996,17 +1058,9 @@ clock_timeout(State, Time) when is_number(Time), Time >= 0 ->
     trunc(Tick + Time) band ?MAX_TICKS.
     
 redraw_state(State) ->
-    each_window(fun clear_window/1, State),
-    each_widget(fun(W) ->
-			case widget_find(W#widget.window) of
-			    error ->
-				lager:error("widget ~w missing window id=~w\n",
-					    [W#widget.id, W#widget.window]);
-			    {ok,Win} ->
-				draw_widget(W, Win)
-			end
-		end),
-    each_window(fun update_window/1, State),
+    fold_windows(fun clear_window/2, State, State),
+    fold_windows(fun draw_window/2, State, State),
+    fold_windows(fun update_window/2, State, State),
     State.
 
 widget_delete(#widget{id=Wid,type=Type}, State) ->
@@ -1018,18 +1072,6 @@ widget_delete(#widget{id=Wid,type=Type}, State) ->
 	    end,
     State#state { wset=Wset1 }.
 
-%% go through all widgets including windows    
-fold_widgets(Fun, Acc) ->
-    lists:foldl(Fun, Acc, widget_list()).
-
-%% iterate through all widgets, but skip windows
-each_widget(Fun) ->
-    fold_widgets(fun(W,_) when W#widget.type =/= window -> 
-			 Fun(W);
-		    (_W,Acc) ->
-			 Acc
-		 end, ok),
-    ok.
 
 %% fold over windows
 fold_windows(Fun, Acc, State) ->
@@ -1037,26 +1079,70 @@ fold_windows(Fun, Acc, State) ->
 		      Fun(widget_fetch(Wid), Acc1)
 	      end, Acc, State#state.wset).
 
-%% iterate over all windows
-each_window(Fun, State) ->
-    fold_windows(fun(Win,_) -> Fun(Win) end, ok, State),
-    ok.
-
-clear_window(Win) ->
+clear_window(Win,_State) ->
     epx:pixmap_fill(Win#widget.image, Win#widget.color).
 
-update_window(Win) ->
+update_window(Win,_State) ->
     epx:pixmap_copy_to(Win#widget.image, Win#widget.backing),
     epx:pixmap_draw(Win#widget.backing, 
 		    Win#widget.win, 0, 0, 0, 0, 
 		    Win#widget.width, 
 		    Win#widget.height).
 
-unmap_window(Win) ->
+unmap_window(Win,_State) ->
     epx:window_detach(Win#widget.win),
     epx:pixmap_detach(Win#widget.backing).
 
-draw_widget(W, Win) ->
+
+draw_window(Win, State) ->
+    draw_tree(Win#widget.id, Win, State).
+
+draw_tree(?EOT, _Win, State) ->
+    State;
+draw_tree(ID, Win, State) ->
+    draw_siblings(ets_tree:first_child(State#state.wtree, ID), Win, State).
+
+draw_siblings(?EOT, _Win, State) ->
+    State;
+draw_siblings(ID, Win, State) ->
+    State1 = draw_one(ID, Win, true, State),
+    draw_siblings(ets_tree:next_sibling(State#state.wtree, ID), Win, State1).
+
+draw_one(ID, Win, ChildrenFirst, State) ->
+    [{_,Wid}] = ets_tree:lookup(State#state.wtree,ID),
+    W = widget_fetch(Wid),
+    if ChildrenFirst ->
+	    State1 = draw_children(ID, W, Win, State),
+	    lager:debug("draw ID = ~p\n", [ID]),
+	    draw_widget(W, Win, State1),
+	    State1;
+       true ->
+	    lager:debug("draw ID = ~p\n", [ID]),
+	    draw_widget(W, Win, State),
+	    draw_children(ID, W, Win, State)
+    end.
+
+draw_children(ID, W, Win, State) when W#widget.type =:= panel ->
+    V = W#widget.value,
+    N = length(W#widget.tabs),
+    if V =:= 0 ->
+	    %% no child selected
+	    State;
+       V >= 1, V =< N ->
+	    Tab = lists:nth(V, W#widget.tabs),
+	    %% tree children first
+	    TabID = ID++[list_to_binary(Tab)],
+	    draw_one(TabID, Win, false, State);
+       true ->
+	    lager:error("panel tab ~w not defined in ~s\n",
+			[V,W#widget.id]),
+	    State
+    end;
+draw_children(ID, _W, Win, State) ->
+    draw_tree(ID, Win, State).
+
+
+draw_widget(W, Win, _State) ->
     case W#widget.type of
 	window ->
 	    %% do not draw (yet), we may use this
@@ -1066,7 +1152,7 @@ draw_widget(W, Win) ->
 	panel ->
 	    epx_gc:draw(
 	      fun() ->
-		      draw_background(Win, W),
+		      %% draw_background(Win, W),
 		      draw_tabs(Win, W)
 	      end);
 
