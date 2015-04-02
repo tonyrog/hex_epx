@@ -77,7 +77,7 @@
 	  animation2 :: epx:epx_animation(),
 	  frame :: number(),
 	  frame2 :: number(),
-	  color = 16#ff000000,
+	  color,    %% = 16#ff000000,
 	  color2,
 	  font_color = 16#00000000,
 	  fill   = none :: epx:epx_fill_style(),
@@ -1109,18 +1109,24 @@ draw_siblings(ID, Win, State) ->
     draw_siblings(ets_tree:next_sibling(State#state.wtree, ID), Win, State1).
 
 draw_one(ID, Win, ChildrenFirst, State) ->
-    [{_,Wid}] = ets_tree:lookup(State#state.wtree,ID),
-    W = widget_fetch(Wid),
-    if ChildrenFirst ->
-	    State1 = draw_children(ID, W, Win, State),
-	    lager:debug("draw ID = ~p\n", [ID]),
-	    draw_widget(W, Win, State1),
-	    State1;
-       true ->
-	    lager:debug("draw ID = ~p\n", [ID]),
-	    draw_widget(W, Win, State),
-	    draw_children(ID, W, Win, State)
+    case ets_tree:lookup(State#state.wtree,ID) of
+	[] ->
+	    lager:error("widget ~p not in the tree", [ID]),
+	    State;
+	[{_,Wid}] ->
+	    W = widget_fetch(Wid),
+	    if ChildrenFirst ->
+		    State1 = draw_children(ID, W, Win, State),
+		    %% lager:debug("draw ID = ~p\n", [ID]),
+		    draw_widget(W, Win, State1),
+		    State1;
+	       true ->
+		    %% lager:debug("draw ID = ~p\n", [ID]),
+		    draw_widget(W, Win, State),
+		    draw_children(ID, W, Win, State)
+	    end
     end.
+
 
 draw_children(ID, W, Win, State) when W#widget.type =:= panel ->
     V = W#widget.value,
@@ -1404,10 +1410,15 @@ draw_split_background(Win, W=#widget {orientation = vertical}) ->
 			2, Color2, Image2, Anim2, Frame2).
 
 draw_one_background(Win,W,X,Y,Width,Height,N,Color,Image,Anim,Frame) ->
-    epx_gc:set_fill_style(W#widget.fill),
-    set_color(W, Color),
-    epx:draw_rectangle(Win#widget.image, X, Y, Width, Height),
-    
+    %% optionally draw background color
+    if Color =:= undefined ->
+	    ok;
+       true ->
+	    epx_gc:set_fill_style(W#widget.fill),  %% fill, fill2!
+	    set_color(W, Color),
+	    epx:draw_rectangle(Win#widget.image, X, Y, Width, Height)
+    end,
+    %% optionally draw image
     if is_record(Image, epx_pixmap) ->
 	    %% lager:debug("drawing image ~p", [Image]),
 	    IWidth  = epx:pixmap_info(Image,width),
@@ -1428,6 +1439,7 @@ draw_one_background(Win,W,X,Y,Width,Height,N,Color,Image,Anim,Frame) ->
        true ->
 	    ok
     end,
+    %% optionally draw animation
     if is_record(Anim, epx_animation) ->
 	    %% lager:debug("drawing animation ~p", [Anim]),
 	    AWidth  = epx:animation_info(Anim,width),
