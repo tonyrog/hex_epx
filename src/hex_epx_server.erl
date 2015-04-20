@@ -144,8 +144,8 @@ output_event(Flags, Env) ->
 init_event(Dir, Flags) ->
     gen_server:call(?MODULE, {init_event, Dir, Flags}).
 
-mod_event(Dir, Flags) ->
-    gen_server:call(?MODULE, {mod_event, Dir, Flags}).
+mod_event(Ref, Flags) ->
+    gen_server:call(?MODULE, {mod_event, Ref, Flags}).
 
 stop() ->
     gen_server:call(?MODULE, stop).
@@ -332,7 +332,7 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
 		    end
 	    end
     end;
-handle_call({mod_event,_Dir,Flags}, _From, State) ->
+handle_call({mod_event,_Ref,Flags}, _From, State) ->
     case widget_lookup(Flags) of
 	E={error,_} ->
 	    {reply,E, State};
