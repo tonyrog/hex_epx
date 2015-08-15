@@ -44,7 +44,7 @@
 -define(SERVER, ?MODULE).
 -define(DICT_T, term()).  %% dict:dict()
 -define(SETS_T, term()).  %% sets:set()
--define(ETS_T,  term()).  %% table()?
+-define(TREE_DB_T, term()).  %% table()?
 
 -define(DEFAULT_WIDTH,  320).
 -define(DEFAULT_HEIGHT, 240).
@@ -115,7 +115,7 @@
 	  redraw_tick :: number(),      %% aprox redraw clock
 	  default_font :: epx:epx_font(),
 	  wset    :: ?SETS_T,           %% set of window id
-	  wtree   :: ?ETS_T             %% ets_tree of all widgets
+	  wtree   :: ?TREE_DB_T         %% hex_tree_db of all widgets
 	  %% widgets are now stored in process dictionary
 	  %% widgets :: ?DICT_T   %% term => #widget{}
 	 }).
@@ -219,8 +219,8 @@ init(Args) ->
 				       %% crossing, motion
 				       button,wheel]},
 			     {color, 16#ffffffff}]),
-    Tree = ets_tree:new(wtree, []),
-    ets_tree:insert(Tree, {?DEFAULT_WINDOW_ID,?DEFAULT_WINDOW_ID}),
+    Tree = hex_tree_db:new(wtree, []),
+    hex_tree_db:insert(Tree, {?DEFAULT_WINDOW_ID,?DEFAULT_WINDOW_ID}),
     self() ! refresh,
     %% This clock will run for 49,71 days before timeout, but we
     %% use it as a cheap? clock source.
@@ -308,7 +308,7 @@ handle_call({init_event,_Dir,Flags}, _From, State) ->
 				   true ->
 					W2#widget.window++"."++W2#widget.id
 				end,
-			    ets_tree:insert(State#state.wtree,{Y,W2#widget.id}),
+			    hex_tree_db:insert(State#state.wtree,{Y,W2#widget.id}),
 			    widget_store(W2),
 			    self() ! refresh,
 			    {reply, ok, State}
@@ -595,18 +595,18 @@ widgets_at_location(X,Y,WinID,State) ->
 select_tree(?EOT,_X,_Y,Acc,_State) ->
     Acc;
 select_tree(ID,X,Y,Acc,State) ->
-    ChildID = ets_tree:first_child(State#state.wtree, ID),
+    ChildID = hex_tree_db:first_child(State#state.wtree, ID),
     select_siblings(ChildID,X,Y,Acc,State).
 
 select_siblings(?EOT,_X,_Y,Acc,_State) ->
     Acc;
 select_siblings(ID,X,Y,Acc,State) ->
     Acc1 = select_one(ID,X,Y,Acc,true,State),
-    NextSibling = ets_tree:next_sibling(State#state.wtree, ID),
+    NextSibling = hex_tree_db:next_sibling(State#state.wtree, ID),
     select_siblings(NextSibling,X,Y,Acc1,State).
 
 select_one(ID,X,Y,Acc,ChildrenFirst,State) ->
-    [{_,Wid}] = ets_tree:lookup(State#state.wtree,ID),
+    [{_,Wid}] = hex_tree_db:lookup(State#state.wtree,ID),
     W = widget_fetch(Wid),
     if ChildrenFirst ->
 	    Acc1 = select_children(W,ID,X,Y,Acc,State),
@@ -1100,16 +1100,16 @@ draw_window(Win, State) ->
 draw_tree(?EOT, _Win, State) ->
     State;
 draw_tree(ID, Win, State) ->
-    draw_siblings(ets_tree:first_child(State#state.wtree, ID), Win, State).
+    draw_siblings(hex_tree_db:first_child(State#state.wtree, ID), Win, State).
 
 draw_siblings(?EOT, _Win, State) ->
     State;
 draw_siblings(ID, Win, State) ->
     State1 = draw_one(ID, Win, true, State),
-    draw_siblings(ets_tree:next_sibling(State#state.wtree, ID), Win, State1).
+    draw_siblings(hex_tree_db:next_sibling(State#state.wtree, ID), Win, State1).
 
 draw_one(ID, Win, ChildrenFirst, State) ->
-    case ets_tree:lookup(State#state.wtree,ID) of
+    case hex_tree_db:lookup(State#state.wtree,ID) of
 	[] ->
 	    lager:error("widget ~p not in the tree", [ID]),
 	    State;
