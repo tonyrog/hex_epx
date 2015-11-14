@@ -960,7 +960,7 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{font=Font});
 	{color,Color} when is_integer(Color), Color >= 0 ->
 	    widget_set(Flags, W#widget{color=Color});
-	{color,ColorName} when is_list(ColorName) ->
+	{color,ColorName} when is_list(ColorName); is_atom(ColorName) ->
 	    case epx_color:from_name(ColorName) of
 		false ->
 		    lager:error("no such color ~s", [ColorName]),
@@ -971,7 +971,7 @@ widget_set([Option|Flags], W) ->
 	    end;
 	{color2,Color} when is_integer(Color), Color >= 0 ->
 	    widget_set(Flags, W#widget{color2=Color});
-	{color2,ColorName} when is_list(ColorName) ->
+	{color2,ColorName} when is_list(ColorName); is_atom(ColorName) ->
 	    case epx_color:from_name(ColorName) of
 		false ->
 		    lager:error("no such color ~s", [ColorName]),
@@ -982,7 +982,7 @@ widget_set([Option|Flags], W) ->
 	    end;
 	{font_color,Color} when is_integer(Color), Color>=0 ->
 	    widget_set(Flags, W#widget{font_color=Color});
-	{font_color,ColorName} when is_list(ColorName) ->
+	{font_color,ColorName} when is_list(ColorName); is_atom(ColorName) ->
 	    case epx_color:from_name(ColorName) of
 		false ->
 		    lager:error("no such text color ~s", [ColorName]),
@@ -1414,13 +1414,14 @@ draw_one_background(Win,W,X,Y,Width,Height,N,Color,Image,Anim,Frame) ->
     if Color =:= undefined ->
 	    ok;
        true ->
+	    lager:debug("draw_one_background: color = ~p\n", [Color]),
 	    epx_gc:set_fill_style(W#widget.fill),  %% fill, fill2!
 	    set_color(W, Color),
 	    epx:draw_rectangle(Win#widget.image, X, Y, Width, Height)
     end,
     %% optionally draw image
     if is_record(Image, epx_pixmap) ->
-	    %% lager:debug("drawing image ~p", [Image]),
+	    lager:debug("drawing image ~p", [Image]),
 	    IWidth  = epx:pixmap_info(Image,width),
 	    IHeight = epx:pixmap_info(Image,height),
 	    if IWidth =:= Width, IHeight =:= Height ->
@@ -1441,7 +1442,7 @@ draw_one_background(Win,W,X,Y,Width,Height,N,Color,Image,Anim,Frame) ->
     end,
     %% optionally draw animation
     if is_record(Anim, epx_animation) ->
-	    %% lager:debug("drawing animation ~p", [Anim]),
+	    lager:debug("drawing animation ~p", [Anim]),
 	    AWidth  = epx:animation_info(Anim,width),
 	    AHeight = epx:animation_info(Anim,height),
 	    Count = epx:animation_info(Anim, count),
