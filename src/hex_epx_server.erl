@@ -69,7 +69,10 @@
 	  text = "",
 	  tabs = [],
 	  border  :: number(),
+	  shadow_x :: number(),
+	  shadow_y :: number(),
 	  orientation = horizontal :: horizontal|vertical,
+	  children_first = true,
 	  image   :: epx:epx_pixmap(),
 	  image2   :: epx:epx_pixmap(),
 	  topimage :: epx:epx_pixmap(),
@@ -878,6 +881,14 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{x=X});
 	{y,Y} when is_integer(Y) ->
 	    widget_set(Flags, W#widget{y=Y});
+	{z,Z} when is_integer(Z) ->
+	    widget_set(Flags, W#widget{z=Z});
+	{shadow_x,X} when is_integer(X) ->
+	    widget_set(Flags, W#widget{shadow_x=X});
+	{shadow_y,Y} when is_integer(Y) ->
+	    widget_set(Flags, W#widget{shadow_y=Y});
+	{children_first,Bool} when is_boolean(Bool) ->
+	    widget_set(Flags, W#widget{children_first=Bool});
 	{width,Width} when is_integer(Width), Width>=0 ->
 	    widget_set(Flags, W#widget{width=Width});
 	{height,Height} when is_integer(Height), Height>=0 ->
@@ -1105,8 +1116,18 @@ draw_tree(ID, Win, State) ->
 draw_siblings(?EOT, _Win, State) ->
     State;
 draw_siblings(ID, Win, State) ->
-    State1 = draw_one(ID, Win, true, State),
+    State1 = draw_one(ID, Win, State),
     draw_siblings(hex_tree_db:next_sibling(State#state.wtree, ID), Win, State1).
+
+draw_one(ID, Win, State) ->
+    case hex_tree_db:lookup(State#state.wtree,ID) of
+	[] ->
+	    lager:error("widget ~p not in the tree", [ID]),
+	    State;
+	[{_,Wid}] ->
+	    W = widget_fetch(Wid),
+	    draw_one_(ID, Win, W, W#widget.children_first, State)
+    end.
 
 draw_one(ID, Win, ChildrenFirst, State) ->
     case hex_tree_db:lookup(State#state.wtree,ID) of
@@ -1115,17 +1136,18 @@ draw_one(ID, Win, ChildrenFirst, State) ->
 	    State;
 	[{_,Wid}] ->
 	    W = widget_fetch(Wid),
-	    if ChildrenFirst ->
-		    State1 = draw_children(ID, W, Win, State),
-		    %% lager:debug("draw ID = ~p\n", [ID]),
-		    draw_widget(W, Win, State1),
-		    State1;
-	       true ->
-		    %% lager:debug("draw ID = ~p\n", [ID]),
-		    draw_widget(W, Win, State),
-		    draw_children(ID, W, Win, State)
-	    end
+	    draw_one_(ID, Win, W, ChildrenFirst, State)
     end.
+
+draw_one_(ID, Win, W, true, State) ->
+    State1 = draw_children(ID, W, Win, State),
+    %% lager:debug("draw ID = ~p\n", [ID]),
+    draw_widget(W, Win, State1),
+    State1;
+draw_one_(ID, Win, W, false, State) ->
+    %% lager:debug("draw ID = ~p\n", [ID]),
+    draw_widget(W, Win, State),
+    draw_children(ID, W, Win, State).
 
 
 draw_children(ID, W, Win, State) when W#widget.type =:= panel ->
@@ -1248,12 +1270,29 @@ draw_text_box(Win, W, Text) ->
 	    Ascent = epx:font_info(Font, ascent),
 	    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
 	    {TxW,TxH} = epx_font:dimension(epx_gc:current(), Text),
+	    {X,Y} = get_coord_xy(W),
 	    draw_text(Win, Ascent, Text, TxW, TxH, 
-		      W#widget.x, W#widget.y, 
+		      X, Y,
 		      W#widget.width, W#widget.height,
 		      W#widget.halign, W#widget.valign);
        true ->
 	    ok
+    end.
+
+get_coord_xy(W) ->
+    case W#widget.state of
+	normal ->
+	    {W#widget.x, W#widget.y};
+	active ->
+	    if is_integer(W#widget.shadow_x),
+	       is_integer(W#widget.shadow_y) ->
+		    {W#widget.x+(W#widget.shadow_x bsr 1),
+		     W#widget.y+(W#widget.shadow_y bsr 1)};
+	       true ->
+		    {W#widget.x, W#widget.y}
+	    end;
+	_ ->
+	    {W#widget.x, W#widget.y}
     end.
 
 %% 
@@ -1375,8 +1414,46 @@ draw_background(Win, W) ->
        true ->
 	    #widget {color = Color, image = Image, animation = Anim,
 		     frame = Frame } = W,
-	    draw_one_background(Win, W, X, Y, Width, Height, 
-				1, Color, Image, Anim, Frame)
+	    if is_integer(W#widget.shadow_x),
+	       is_integer(W#widget.shadow_y) ->
+		    case W#widget.state of
+			normal ->
+			    Xs = W#widget.shadow_x,
+			    Ys = W#widget.shadow_y,
+			    draw_one_background(Win,W#widget{fill=[blend]},
+						X+Xs,Y+Ys,
+						Width,Height,
+						1, {85,0,0,0},
+						Image, Anim, Frame),
+%%			    epx:pixmap_filter_area(Win#widget.image,
+%%						   Win#widget.image,
+%%						   {5,1,<<1,1,1,1,1>>},
+%%						   X, Y,
+%%						   X, Y, Width, Height),
+
+			    draw_one_background(Win, W, X, Y, Width, Height, 
+						1, Color, Image, Anim, Frame);
+			active ->
+			    Xs = W#widget.shadow_x,
+			    Ys = W#widget.shadow_y,
+			    Xi = Xs bsr 1,
+			    Yi = Ys bsr 1,
+			    draw_one_background(Win,W#widget{fill=[blend]},
+						X+Xs,Y+Xs,
+						Width,Height,
+						1, {200,0,0,0},
+						Image, Anim, Frame),
+			    draw_one_background(Win, W, X+Xi,Y+Yi,
+						Width, Height,
+						1, Color, Image, Anim, Frame);
+			_ ->
+			    draw_one_background(Win, W, X, Y, Width, Height, 
+						1, Color, Image, Anim, Frame)
+		    end;
+	       true ->
+		    draw_one_background(Win, W, X, Y, Width, Height, 
+					1, Color, Image, Anim, Frame)
+	    end
     end.
 
 draw_split_background(Win, W=#widget {orientation = horizontal}) ->
@@ -1414,10 +1491,15 @@ draw_one_background(Win,W,X,Y,Width,Height,N,Color,Image,Anim,Frame) ->
     if Color =:= undefined ->
 	    ok;
        true ->
-	    lager:debug("draw_one_background: color = ~p\n", [Color]),
+	    %% lager:debug("draw_one_background: color = ~p\n", [Color]),
 	    epx_gc:set_fill_style(W#widget.fill),  %% fill, fill2!
 	    set_color(W, Color),
-	    epx:draw_rectangle(Win#widget.image, X, Y, Width, Height)
+	    case W#widget.type of
+		button ->
+		    epx:draw_roundrect(Win#widget.image,X,Y,Width,Height,8,8);
+		_ ->
+		    epx:draw_rectangle(Win#widget.image, X, Y, Width, Height)
+	    end
     end,
     %% optionally draw image
     if is_record(Image, epx_pixmap) ->
@@ -1631,7 +1713,13 @@ draw_value_marker(Win, W, R) ->
 set_color(W, Color0) ->
     Color = case W#widget.state of 
 		active ->
-		    color_sub(Color0, 16#00333333);  %% darken color when active
+		    if is_integer(W#widget.shadow_x),
+		       is_integer(W#widget.shadow_y) ->
+			    Color0;
+		       true ->
+			    %% darken color when active
+			    color_sub(Color0, 16#00333333)
+		    end;
 		_ ->
 		    Color0
 	    end,
