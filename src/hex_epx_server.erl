@@ -72,7 +72,8 @@
 	  shadow_x :: number(),
 	  shadow_y :: number(),
 	  orientation = horizontal :: horizontal|vertical,
-	  children_first = true,
+	  children_first = true :: boolean(),
+	  relative = false :: boolean(),   %% childrens are relative to parent
 	  image   :: epx:epx_pixmap(),
 	  image2   :: epx:epx_pixmap(),
 	  topimage :: epx:epx_pixmap(),
@@ -889,6 +890,8 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{shadow_y=Y});
 	{children_first,Bool} when is_boolean(Bool) ->
 	    widget_set(Flags, W#widget{children_first=Bool});
+	{relative,Bool} when is_boolean(Bool) ->
+	    widget_set(Flags, W#widget{relative=Bool});
 	{width,Width} when is_integer(Width), Width>=0 ->
 	    widget_set(Flags, W#widget{width=Width});
 	{height,Height} when is_integer(Height), Height>=0 ->
@@ -1106,51 +1109,70 @@ unmap_window(Win,_State) ->
 
 
 draw_window(Win, State) ->
-    draw_tree(Win#widget.id, Win, State).
+    draw_tree(Win#widget.id, Win, 0, 0, State).
 
-draw_tree(?EOT, _Win, State) ->
+draw_tree(?EOT, _Win, _X, _Y, State) ->
     State;
-draw_tree(ID, Win, State) ->
-    draw_siblings(hex_tree_db:first_child(State#state.wtree, ID), Win, State).
+draw_tree(ID, Win, X, Y, State) ->
+    draw_siblings(hex_tree_db:first_child(State#state.wtree, ID), 
+		  Win, X, Y, State).
 
-draw_siblings(?EOT, _Win, State) ->
+draw_siblings(?EOT, _Win, _X, _Y, State) ->
     State;
-draw_siblings(ID, Win, State) ->
-    State1 = draw_one(ID, Win, State),
-    draw_siblings(hex_tree_db:next_sibling(State#state.wtree, ID), Win, State1).
+draw_siblings(ID, Win, X, Y, State) ->
+    State1 = draw_one(ID, Win, X, Y, State),
+    draw_siblings(hex_tree_db:next_sibling(State#state.wtree, ID), 
+		  Win, X, Y, State1).
 
-draw_one(ID, Win, State) ->
+draw_one(ID, Win, X, Y, State) ->
     case hex_tree_db:lookup(State#state.wtree,ID) of
 	[] ->
 	    lager:error("widget ~p not in the tree", [ID]),
 	    State;
 	[{_,Wid}] ->
 	    W = widget_fetch(Wid),
-	    draw_one_(ID, Win, W, W#widget.children_first, State)
+	    draw_one_(ID, Win, X, Y, W, W#widget.children_first, State)
     end.
 
-draw_one(ID, Win, ChildrenFirst, State) ->
+draw_one(ID, Win, X, Y, ChildrenFirst, State) ->
     case hex_tree_db:lookup(State#state.wtree,ID) of
 	[] ->
 	    lager:error("widget ~p not in the tree", [ID]),
 	    State;
 	[{_,Wid}] ->
 	    W = widget_fetch(Wid),
-	    draw_one_(ID, Win, W, ChildrenFirst, State)
+	    draw_one_(ID, Win, X, Y, W, ChildrenFirst, State)
     end.
 
-draw_one_(ID, Win, W, true, State) ->
-    State1 = draw_children(ID, W, Win, State),
-    %% lager:debug("draw ID = ~p\n", [ID]),
-    draw_widget(W, Win, State1),
-    State1;
-draw_one_(ID, Win, W, false, State) ->
-    %% lager:debug("draw ID = ~p\n", [ID]),
-    draw_widget(W, Win, State),
-    draw_children(ID, W, Win, State).
+draw_one_(ID, Win, X, Y, W, true, State) ->
+    if W#widget.relative ->
+	    X1 = X + W#widget.x,
+	    Y1 = Y + W#widget.y,
+	    State1 = draw_children(ID, Win, X1, Y1, W, State),
+	    draw_widget(W, Win, X1, Y1, State1),
+	    State1;
+       true ->
+	    X1 = W#widget.x,
+	    Y1 = W#widget.y,
+	    State1 = draw_children(ID, Win, X1, Y1, W, State),
+	    draw_widget(W, Win, X1, Y1, State1),
+	    State1
+    end;
+draw_one_(ID, Win, X, Y, W, false, State) ->
+    if W#widget.relative ->
+	    X1 = X + W#widget.x,
+	    Y1 = Y + W#widget.y,
+	    draw_widget(W, Win, X1, Y1, State),
+	    draw_children(ID, Win, X1, Y1, W, State);
+       true ->
+	    X1 = W#widget.x,
+	    Y1 = W#widget.y,
+	    draw_widget(W, Win, X1, Y1, State),
+	    draw_children(ID, Win, X1, Y1, W, State)
+    end.
 
 
-draw_children(ID, W, Win, State) when W#widget.type =:= panel ->
+draw_children(ID, Win, X, Y, W, State) when W#widget.type =:= panel ->
     V = W#widget.value,
     N = length(W#widget.tabs),
     if V =:= 0 ->
@@ -1160,17 +1182,17 @@ draw_children(ID, W, Win, State) when W#widget.type =:= panel ->
 	    Tab = lists:nth(V, W#widget.tabs),
 	    %% tree children first
 	    TabID = ID++[list_to_binary(Tab)],
-	    draw_one(TabID, Win, false, State);
+	    draw_one(TabID, Win, X, Y, false, State);
        true ->
 	    lager:error("panel tab ~w not defined in ~s\n",
 			[V,W#widget.id]),
 	    State
     end;
-draw_children(ID, _W, Win, State) ->
-    draw_tree(ID, Win, State).
+draw_children(ID, Win, X, Y, _W, State) ->
+    draw_tree(ID, Win, X, Y, State).
 
 
-draw_widget(W, Win, _State) ->
+draw_widget(W, Win, X, Y, _State) ->
     case W#widget.type of
 	window ->
 	    %% do not draw (yet), we may use this
@@ -1181,27 +1203,27 @@ draw_widget(W, Win, _State) ->
 	    epx_gc:draw(
 	      fun() ->
 		      %% draw_background(Win, W),
-		      draw_tabs(Win, W)
+		      draw_tabs(Win, X, Y, W)
 	      end);
 
 	button ->
 	    epx_gc:draw(
 	      fun() ->
-		      draw_text_box(Win, W, W#widget.text)
+		      draw_text_box(Win, X, Y, W, W#widget.text)
 	      end);
 
 	switch ->
 	    epx_gc:draw(
 	      fun() ->
-		      draw_text_box(Win, W, W#widget.text)
+		      draw_text_box(Win, X, Y, W, W#widget.text)
 	      end);
 
 	slider ->
 	    epx_gc:draw(
 	      fun() ->
-		      draw_background(Win, W),
-		      draw_border(Win, W, W#widget.border),
-		      draw_value_bar(Win, W, W#widget.topimage)
+		      draw_background(Win, X, Y, W),
+		      draw_border(Win, X, Y, W, W#widget.border),
+		      draw_value_bar(Win, X, Y, W, W#widget.topimage)
 	      end);
 
 	value ->
@@ -1223,13 +1245,13 @@ draw_widget(W, Win, _State) ->
 			     true ->
 				  lists:flatten(io_lib:format(Format,[Value]))
 			  end,
-		      draw_text_box(Win, W, Text)
+		      draw_text_box(Win, X, Y, W, Text)
 	      end);
 
 	rectangle ->
 	    epx_gc:draw(
 	      fun() ->
-		      draw_background(Win, W)
+		      draw_background(Win, X, Y, W)
 	      end);
 
 	ellipse ->
@@ -1238,7 +1260,7 @@ draw_widget(W, Win, _State) ->
 		      epx_gc:set_fill_style(W#widget.fill),
 		      set_color(W, W#widget.color),
 		      epx:draw_ellipse(Win#widget.image, 
-				       W#widget.x, W#widget.y,
+				       X, Y,
 				       W#widget.width, W#widget.height)
 	      end);
 
@@ -1247,75 +1269,75 @@ draw_widget(W, Win, _State) ->
 	      fun() ->	
 		      set_color(W, W#widget.color),
 		      epx:draw_line(Win#widget.image, 
-				    W#widget.x, W#widget.y,
-				    W#widget.x+W#widget.width-1,
-				    W#widget.y+W#widget.height-1)
+				    X, Y,
+				    X+W#widget.width-1,
+				    Y+W#widget.height-1)
 	      end);
 
 	text ->
 	    epx_gc:draw(
 	      fun() ->
-		      draw_text_box(Win, W, W#widget.text)
+		      draw_text_box(Win, X, Y, W, W#widget.text)
 	      end);
 	Type ->
 	    lager:debug("bad widget type ~p", [Type])
     end.
 
 %% draw widget button/value with centered text
-draw_text_box(Win, W, Text) ->
-    draw_background(Win, W),
+draw_text_box(Win, X, Y, W, Text) ->
+    draw_background(Win, X, Y, W),
     if is_list(Text), Text =/= "" ->
 	    Font = W#widget.font,
 	    epx_gc:set_font(Font),
 	    Ascent = epx:font_info(Font, ascent),
 	    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
 	    {TxW,TxH} = epx_font:dimension(epx_gc:current(), Text),
-	    {X,Y} = get_coord_xy(W),
+	    {X1,Y1} = get_coord_xy(W,X,Y),
 	    draw_text(Win, Ascent, Text, TxW, TxH, 
-		      X, Y,
+		      X1, Y1,
 		      W#widget.width, W#widget.height,
 		      W#widget.halign, W#widget.valign);
        true ->
 	    ok
     end.
 
-get_coord_xy(W) ->
+get_coord_xy(W,X0,Y0) ->
     case W#widget.state of
 	normal ->
-	    {W#widget.x, W#widget.y};
+	    {X0,Y0};
 	active ->
 	    if is_integer(W#widget.shadow_x),
 	       is_integer(W#widget.shadow_y) ->
-		    {W#widget.x+(W#widget.shadow_x bsr 1),
-		     W#widget.y+(W#widget.shadow_y bsr 1)};
+		    {X0+(W#widget.shadow_x bsr 1),
+		     Y0+(W#widget.shadow_y bsr 1)};
 	       true ->
-		    {W#widget.x, W#widget.y}
+		    {X0, Y0}
 	    end;
 	_ ->
-	    {W#widget.x, W#widget.y}
+	    {X0, Y0}
     end.
 
 %% 
 %%  Put tabs as a row (horizontal) 
 %%  or column (vertical)
 %%
-draw_tabs(Win, W) ->
+draw_tabs(Win,X,Y,W) ->
     {Ascent,TextDims,MaxW,MaxH} = tabs_item_box(W),
     N = length(TextDims),
     Width =  (MaxW+?TABS_X_PAD),
     Height = (MaxH+?TABS_Y_PAD),
     case W#widget.orientation of
 	horizontal ->
-	    X0 = W#widget.x + (W#widget.width - (Width*N)) div 2,
-	    Y0 = (W#widget.y + ?TABS_Y_OFFSET),
+	    X0 = X + (W#widget.width - (Width*N)) div 2,
+	    Y0 = (Y + ?TABS_Y_OFFSET),
 	    set_color(W, ?TABS_COLOR),
 	    epx_gc:set_fill_style(solid),
 	    epx:draw_rectangle(Win#widget.image, X0, Y0, Width*N, Height),
 	    draw_h_tabs(Win, W, 1, Ascent, TextDims, X0, Y0, Width, Height,
 			W#widget.halign, W#widget.valign);
 	vertical ->
-	    Y0 =  W#widget.y + (W#widget.height - (Height*N)) div 2,
-	    X0 = (W#widget.x + ?TABS_X_OFFSET),
+	    Y0 =  Y + (W#widget.height - (Height*N)) div 2,
+	    X0 = (X + ?TABS_X_OFFSET),
 	    set_color(W, ?TABS_COLOR),
 	    epx_gc:set_fill_style(solid),
 	    epx:draw_rectangle(Win#widget.image, X0, Y0, Width, Height*N),
@@ -1399,18 +1421,18 @@ draw_text(Win, Ascent, Text, TxW, TxH, X, Y, Width, Height, Halign, Valign) ->
     epx:draw_string(Win#widget.image, X1, Y1, Text).
 
 
-draw_background(Win, W) ->
-    #widget {min=Min, max=Max, width=Width, height=Height, x=X, y=Y} = W,
+draw_background(Win, X, Y, W) ->
+    #widget {min=Min, max=Max, width=Width, height=Height} = W,
    
     if W#widget.color2 =/= undefined,
        Min =/= undefined, Max =/= undefined ->
-	    draw_split_background(Win, W);
+	    draw_split_background(Win,X,Y,W);
        W#widget.image2 =/= undefined,
        Min =/= undefined, Max =/= undefined ->
-	    draw_split_background(Win, W);
+	    draw_split_background(Win,X,Y,W);
        W#widget.animation2 =/= undefined,
        Min =/= undefined, Max =/= undefined ->
-	    draw_split_background(Win, W);
+	    draw_split_background(Win,X,Y,W);
        true ->
 	    #widget {color = Color, image = Image, animation = Anim,
 		     frame = Frame } = W,
@@ -1456,8 +1478,8 @@ draw_background(Win, W) ->
 	    end
     end.
 
-draw_split_background(Win, W=#widget {orientation = horizontal}) ->
-    #widget {width=Width, height=Height, x=X, y=Y} = W,
+draw_split_background(Win,X,Y,W=#widget {orientation = horizontal}) ->
+    #widget {width=Width, height=Height} = W,
     #widget {color = Color, image = Image, 
 	     animation = Anim, frame = Frame} = W,
     #widget {color2 = Color2, image2 = Image2, 
@@ -1469,8 +1491,8 @@ draw_split_background(Win, W=#widget {orientation = horizontal}) ->
     draw_one_background(Win, W, X + trunc(R*Width), Y,
 			Width - trunc(R*Width), Height, 
 			2, Color2, Image2, Anim2, Frame2);
-draw_split_background(Win, W=#widget {orientation = vertical}) ->
-    #widget {width=Width, height=Height, x=X, y=Y} = W,
+draw_split_background(Win,X,Y,W=#widget {orientation = vertical}) ->
+    #widget {width=Width, height=Height} = W,
     #widget {color = Color, image = Image,
 	     animation = Anim, frame = Frame } = W,
     #widget {color2 = Color2, image2 = Image2,
@@ -1619,26 +1641,26 @@ create_tmp_pixmap(Format, Width, Height) ->
     Pixmap.
 
     
-draw_border(_Win, _W, undefined) ->
+draw_border(_Win,_X,_Y,_W, undefined) ->
     ok;
-draw_border(_Win, _W, 0) ->
+draw_border(_Win,_X,_Y,_W, 0) ->
     ok;
-draw_border(Win, W, _Border) ->
+draw_border(Win,X,Y,W,_Border) ->
     %% fixme: calculate size from border thickness
     epx_gc:set_foreground_color(16#00000000),
     epx_gc:set_fill_style(none),
     epx:draw_rectangle(Win#widget.image,
-		       W#widget.x, W#widget.y,
+		       X, Y,
 		       W#widget.width, W#widget.height).
 
-draw_value_bar(Win, W, TopImage) ->
+draw_value_bar(Win,X,Y,W,TopImage) ->
     #widget { min=Min, max=Max, value=Value} = W,
     if is_number(Min),is_number(Max),is_number(Value) ->
 	    R = value_proportion(W),
 	    if is_record(TopImage, epx_pixmap) ->
-		    draw_topimage(Win, W, TopImage, R);
+		    draw_topimage(Win,X,Y,W, TopImage, R);
 	       true ->
-		    draw_value_marker(Win, W, R)
+		    draw_value_marker(Win,X,Y, W, R)
 	    end;
 		    
        true ->
@@ -1665,23 +1687,23 @@ value_proportion(W) ->
 		0.5
 	end.
 
-draw_topimage(Win, W, TopImage, R) ->
+draw_topimage(Win,Xw,Yw, W, TopImage, R) ->
     lager:debug("drawing topimage ~p, orientation ~p, r ~p", 
 		[W#widget.topimage, W#widget.orientation, R]),
     Width = epx:pixmap_info(TopImage,width),
     Height = epx:pixmap_info(TopImage,height),
     {X, Y} = case W#widget.orientation of
 		 horizontal ->
-		     X0 = W#widget.x,
-		     X1 = W#widget.x + W#widget.width - 1,
+		     X0 = Xw,
+		     X1 = Xw + W#widget.width - 1,
 		     Xv = trunc(X0*(1-R) + X1*R),
 		     {Xv - (Width div 2),
-		      W#widget.y + (W#widget.height- Height) div 2};
+		      Yw + (W#widget.height- Height) div 2};
 		 vertical ->
-		     Y0 = W#widget.y + W#widget.height - 1,
-		     Y1 = W#widget.y,
+		     Y0 = Yw + W#widget.height - 1,
+		     Y1 = Yw,
 		     Yv = trunc(Y0*(1-R) + Y1*R),
-		     {W#widget.x + (W#widget.width - Width) div 2,
+		     {Xw + (W#widget.width - Width) div 2,
 		      (Yv - (Height div 2))}
 	     end,
     epx:pixmap_copy_area(TopImage,
@@ -1689,20 +1711,20 @@ draw_topimage(Win, W, TopImage, R) ->
 			 0, 0, X, Y, Width, Height,
 			 [blend]).
 
-draw_value_marker(Win, W, R) ->
+draw_value_marker(Win,Xw,Yw,W, R) ->
     epx_gc:set_fill_style(solid),
     epx_gc:set_fill_color(16#00000000),
     M = 3,    %% marker width/height
     case W#widget.orientation of
 	horizontal ->
-	    X = trunc(W#widget.x + R*((W#widget.width-M)-1)),
-	    Y =  W#widget.y + 2,
+	    X = trunc(Xw + R*((W#widget.width-M)-1)),
+	    Y =  Yw + 2,
 	    epx:draw_rectangle(Win#widget.image,
 			       X, Y, M, W#widget.height-4);
 	vertical ->
-	    X = W#widget.x + 2,
-	    Y0 = W#widget.y + W#widget.height - 1,
-	    Y1 = W#widget.y,
+	    X = Xw + 2,
+	    Y0 = Yw + W#widget.height - 1,
+	    Y1 = Yw,
 	    Y = trunc(Y0*(1-R) + Y1*R),
 	    epx:draw_rectangle(Win#widget.image,
 			       X, Y - (M div 2), W#widget.width-4, M)
