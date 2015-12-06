@@ -54,6 +54,13 @@
 
 -define(is_string(Cs), is_list((Cs))).
 
+%% HARD DEBUG
+-define(dbg(F), ok).
+-define(dbg(F,A), ok).
+%% -define(dbg(F,A), io:format((F),(A))).
+%% -define(dbg(F), io:format((F))).
+
+
 -record(widget,
 	{
 	  id :: string(),     %% (structured) name of widget
@@ -500,18 +507,10 @@ handle_event(Event={button_press,Button,{X,Y,_}},Window,State) ->
 	    case widgets_at_location(X,Y,WinID,State) of
 		[] ->
 		    {noreply, State};
-		_Ws1=[W|_] ->
-		    lager:debug("selected ws=~p", [[Wi#widget.id||Wi<-_Ws1]]),
-		    case widget_event(Event, W, Window, State) of
-			W ->
-			    {noreply, State};
-			W1 ->
-			    ID = W1#widget.id,
-			    Active = [ID | State#state.active],
-			    widget_store(W1),
-			    self() ! refresh,
-			    {noreply, State#state { active = Active }}
-		    end
+		Ws ->
+		    lager:debug("selected ws=~p", [[Wi#widget.id||Wi<-Ws]]),
+		    State1 = widgets_event(Ws, Event, Window, State),
+		    {noreply, State1}
 	    end;
 	false ->
 	    {noreply, State}
@@ -547,14 +546,9 @@ handle_event(Event={motion,Button,{X,Y,_}},Window,State) ->
 	    case widgets_at_location(X,Y,WinID,State) of
 		[] ->
 		    {noreply, State};
-		[W|_] ->
-		    case widget_event(Event, W, Window, State) of
-			W -> {noreply, State}; %% no changed
-			W1 ->
-			    widget_store(W1),
-			    self() ! refresh,
-			    {noreply, State}
-		    end
+		Ws ->
+		    State1 = widgets_motion(Ws, Event, Window, State),
+		    {noreply, State1}
 	    end;
 	false ->
 	    {noreply, State}
@@ -586,6 +580,30 @@ handle_event(_Event,_W,State) ->
     lager:error("unknown event: ~p", [_Event]),
     {noreply, State}.
 
+widgets_motion([W|Ws], Event, Window, State) ->
+    case widget_event(Event, W, Window, State) of
+	W -> State; %% no chang
+	W1 ->
+	    widget_store(W1),
+	    self() ! refresh,
+	    State
+    end;
+widgets_motion([], _Event, _Window, State) ->
+    State.
+
+widgets_event([W|Ws], Event, Window, State) ->
+    case widget_event(Event, W, Window, State) of
+	W -> widgets_event(Ws, Event, Window, State);
+	W1 ->
+	    ID = W1#widget.id,
+	    Active = [ID | State#state.active],
+	    widget_store(W1),
+	    self() ! refresh,
+	    widgets_event(Ws, Event, Window, State#state { active = Active })
+    end;
+widgets_event([], _Event, _Window, State) ->
+    State.
+    
 %%
 %% Find all widgets in window WinID that is hit by the
 %% point (X,Y). Return a Z sorted list
@@ -637,8 +655,8 @@ select_children(W,ID,X,Y,Acc,State) when W#widget.type =:= panel ->
 				[V,W#widget.id]),
 		    Acc
 	    end;
-	Tab ->
-	    io:format("tab at (~w,~w) = ~w\n", [X,Y,Tab]),
+	_Tab ->
+	    ?dbg("tab at (~w,~w) = ~w\n", [X,Y,_Tab]),
 	    [W|Acc]
     end;
 select_children(_W,ID,X,Y,Acc,State) ->
@@ -775,7 +793,7 @@ widget_event({button_press,_Button,Where}, W, Window, State) ->
 		    lager:debug("panel box select error"),
 		    W;
 		Value ->
-		    io:format("tab at (~w,~w) = ~w\n", [X,Y,Value]),
+		    ?dbg("tab at (~w,~w) = ~w\n", [X,Y,Value]),
 		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
 		    W#widget { value = Value }
 	    end;
@@ -1028,6 +1046,21 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{value=V1});
 	{format,F} when is_list(F) ->
 	    widget_set(Flags, W#widget{format=F});
+	{state, active} when W#widget.state =/= active ->
+	    if W#widget.type =:= button;W#widget.type =:= switch ->
+		    widget_set(Flags, W#widget{state=active, value=1});
+	       true ->
+		    widget_set(Flags, W)
+	    end;
+	{state, normal} when W#widget.state =/= normal ->
+	    if W#widget.type =:= button;W#widget.type =:= switch ->
+		    widget_set(Flags, W#widget{state=normal, value=0});
+	       true ->
+		    widget_set(Flags, W)
+	    end;
+	{state, _S} ->
+	    lager:debug("state ~s already set ~p", [_S,W#widget.id]),
+	    widget_set(Flags, W);
 	_ ->
 	    lager:debug("option ignored ~p", [Option]),
 	    widget_set(Flags, W)
