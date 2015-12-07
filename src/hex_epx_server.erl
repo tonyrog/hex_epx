@@ -582,11 +582,11 @@ handle_event(_Event,_W,State) ->
 
 widgets_motion([W|Ws], Event, Window, State) ->
     case widget_event(Event, W, Window, State) of
-	W -> State; %% no chang
+	W -> widgets_motion(Ws, Event, Window, State);
 	W1 ->
 	    widget_store(W1),
 	    self() ! refresh,
-	    State
+	    widgets_motion(Ws, Event, Window, State)
     end;
 widgets_motion([], _Event, _Window, State) ->
     State.
