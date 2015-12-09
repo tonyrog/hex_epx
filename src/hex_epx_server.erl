@@ -386,7 +386,7 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({epx_event,Win,Event}, State) ->
-    %% lager:debug("event: ~p", [Event]),
+    ?dbg("event: ~p", [Event]),
     %% find window widget (fixme: add reverse map at some point) ?
     case fold_windows(
 	   fun(W,Acc) ->
@@ -1113,7 +1113,7 @@ redraw_state(State) ->
 widget_delete(#widget{id=Wid,type=Type}, State) ->
     widget_erase(Wid),
     Wset1 = if Type =:= window ->
-		    sets:del_delement(Wid,State#state.wset);
+		    sets:del_element(Wid,State#state.wset);
 	       true ->
 		    State#state.wset
 	    end,
@@ -1123,7 +1123,10 @@ widget_delete(#widget{id=Wid,type=Type}, State) ->
 %% fold over windows
 fold_windows(Fun, Acc, State) ->
     sets:fold(fun(Wid,Acc1) ->
-		      Fun(widget_fetch(Wid), Acc1)
+		      case widget_find(Wid) of
+			  error -> Acc1;
+			  {ok,W} -> Fun(W, Acc1)
+		      end
 	      end, Acc, State#state.wset).
 
 clear_window(Win,_State) ->
