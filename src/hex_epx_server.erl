@@ -28,7 +28,7 @@
 
 %% API
 -export([start_link/1, stop/0]).
--export([add_event/3, mod_event/2, del_event/1]).
+-export([add_event/3, mod_event/2, del_event/1, get_event/2]).
 -export([init_event/2, output_event/2]).
 
 -export([color_add/2, color_interpolate/3, color_add_argb/2, 
@@ -157,6 +157,9 @@ init_event(Dir, Flags) ->
 
 mod_event(Ref, Flags) ->
     gen_server:call(?MODULE, {mod_event, Ref, Flags}).
+
+get_event(ID, Flags) ->
+    gen_server:call(?MODULE, {get_event,ID,Flags}).
 
 stop() ->
     gen_server:call(?MODULE, stop).
@@ -357,6 +360,13 @@ handle_call({mod_event,_Ref,Flags}, _From, State) ->
 		error:Reason ->
 		    {reply, {error,Reason}, State}
 	    end
+    end;
+handle_call({get_event,ID,Flags},_From,State) ->
+    case widget_find(ID) of
+	error ->
+	    {reply,{error,enoent}, State};
+	{ok,W} ->
+	    {reply,{ok,widget_get(Flags, W)}, State}
     end;
 handle_call(_Request, _From, State) ->
     lager:debug("unknown call ~p", [_Request]),
@@ -1067,6 +1077,51 @@ widget_set([Option|Flags], W) ->
     end;
 widget_set([], W) ->
     W.
+
+widget_get(Flags, W) ->
+    widget_get(Flags, W, []).
+
+widget_get([Flag|Flags], W, Acc) ->
+    case Flag of
+	type -> widget_get(Flags, W, [{type,W#widget.type}|Acc]);
+	id -> widget_get(Flags, W, [{type,W#widget.id}|Acc]);
+	static -> widget_get(Flags, W, [{static,W#widget.static}|Acc]);
+	x -> widget_get(Flags, W, [{x,W#widget.x}|Acc]);
+	y -> widget_get(Flags, W, [{y,W#widget.y}|Acc]);
+	z -> widget_get(Flags, W, [{y,W#widget.z}|Acc]);
+	shadow_x -> widget_get(Flags, W, [{shadow_x,W#widget.shadow_x}|Acc]);
+	shadow_y -> widget_get(Flags, W, [{shadow_y,W#widget.shadow_y}|Acc]);
+	relative -> widget_get(Flags, W, [{relative,W#widget.relative}|Acc]);
+	width -> widget_get(Flags, W, [{width,W#widget.width}|Acc]);
+	height -> widget_get(Flags, W, [{height,W#widget.height}|Acc]);
+	text -> widget_get(Flags, W, [{text,W#widget.text}|Acc]);
+	tabs -> widget_get(Flags, W, [{tabs,W#widget.tabs}|Acc]);
+	border -> widget_get(Flags, W, [{border,W#widget.border}|Acc]);
+	orientation -> widget_get(Flags, W, [{orientation,W#widget.orientation}|Acc]);
+	image -> widget_get(Flags, W, [{image,W#widget.image}|Acc]);
+	topimage -> widget_get(Flags, W, [{topimage,W#widget.topimage}|Acc]);
+	animation -> widget_get(Flags, W, [{animation,W#widget.animation}|Acc]);
+	frame -> widget_get(Flags, W, [{frame,W#widget.frame}|Acc]);
+	frame2 -> widget_get(Flags, W, [{frame2,W#widget.frame2}|Acc]);
+	animate -> widget_get(Flags, W, [{animate,W#widget.animate}|Acc]);
+	animate2 -> widget_get(Flags, W, [{animate2,W#widget.animate2}|Acc]);
+	font -> widget_get(Flags, W, [{font,W#widget.font}|Acc]);
+	color -> widget_get(Flags, W, [{color,W#widget.color}|Acc]);
+	color2 -> widget_get(Flags, W, [{color2,W#widget.color2}|Acc]);
+	font_color -> widget_get(Flags, W, [{font_color,W#widget.font_color}|Acc]);
+	fill -> widget_get(Flags, W, [{fill,W#widget.fill}|Acc]);
+	events -> widget_get(Flags, W, [{event,W#widget.events}|Acc]);
+	halign -> widget_get(Flags, W, [{halign,W#widget.halign}|Acc]);
+	valign -> widget_get(Flags, W, [{valign,W#widget.valign}|Acc]);
+	min -> widget_get(Flags, W, [{min,W#widget.min}|Acc]);
+	max -> widget_get(Flags, W, [{max,W#widget.max}|Acc]);
+	value -> widget_get(Flags, W, [{value,W#widget.value}|Acc]);
+	format -> widget_get(Flags, W, [{format,W#widget.format}|Acc]);
+	state -> widget_get(Flags, W, [{state,W#widget.state}|Acc]);
+	_ -> widget_get(Flags, W, Acc)
+    end;
+widget_get([], _W, Acc) ->
+    lists:reverse(Acc).
 
 %% find id among flags and convert tos string
 find_id(Flags) ->

@@ -32,6 +32,7 @@
 	 add_event/3, 
 	 del_event/1, 
 	 output/2]).
+-export([get_event/2]).
 
 %%
 %%  add_event(Flags::[{atom(),term()}, Signal::signal(), Cb::function()) ->    
@@ -53,6 +54,11 @@ mod_event(Ref, Flags) ->
 del_event(Ref) ->
     hex_epx_server:del_event(Ref).
 
+%%
+%%  get_event(Flags::[atom()]) -> {ok, [{atom(),term()}]} | {error,Reason::term()}
+%%     ok.
+get_event(ID,Flags) ->
+    hex_epx_server:get_event(ID,Flags).
 %%
 %% output(Flags::[{atom(),term()}], Env::[{atom(),term()}]) ->
 %%    ok.
