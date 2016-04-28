@@ -29,6 +29,7 @@
 	 event_spec/1,
 	 init_event/2,
 	 mod_event/2,
+	 close_event/2,
 	 add_event/3, 
 	 del_event/1, 
 	 output/2]).
@@ -53,6 +54,13 @@ mod_event(Ref, Flags) ->
 %%     ok.
 del_event(Ref) ->
     hex_epx_server:del_event(Ref).
+
+%%
+%%  close_event(Ref::reference(), Flags::[{atom(),term()}]) ->
+%%     ok | {error, Reason}
+%%
+close_event(Ref, Flags) ->
+    hex_epx_server:close_event(Ref, Flags).
 
 %%
 %%  get_event(Flags::[atom()]) -> {ok, [{atom(),term()}]} | {error,Reason::term()}

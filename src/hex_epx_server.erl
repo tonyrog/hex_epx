@@ -28,7 +28,7 @@
 
 %% API
 -export([start_link/1, stop/0]).
--export([add_event/3, mod_event/2, del_event/1, get_event/2]).
+-export([add_event/3, mod_event/2, del_event/1, get_event/2, close_event/2]).
 -export([init_event/2, output_event/2]).
 
 -export([color_add/2, color_interpolate/3, color_add_argb/2, 
@@ -157,6 +157,9 @@ init_event(Dir, Flags) ->
 
 mod_event(Ref, Flags) ->
     gen_server:call(?MODULE, {mod_event, Ref, Flags}).
+
+close_event(Ref, Flags) ->
+    gen_server:call(?MODULE, {close_event, Ref, Flags}).
 
 get_event(ID, Flags) ->
     gen_server:call(?MODULE, {get_event,ID,Flags}).
@@ -360,6 +363,15 @@ handle_call({mod_event,_Ref,Flags}, _From, State) ->
 		error:Reason ->
 		    {reply, {error,Reason}, State}
 	    end
+    end;
+handle_call({close_event,_Ref,Flags}, _From, State) ->
+    case widget_lookup(Flags) of
+	E={error,_} ->
+	    {reply,E,State};
+	{ok,W} ->
+	    State1 = widget_delete(W, State),
+	    self() ! refresh,
+	    {reply, ok, State1}
     end;
 handle_call({get_event,ID,Flags},_From,State) ->
     case widget_find(ID) of
