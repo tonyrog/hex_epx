@@ -365,13 +365,20 @@ handle_call({mod_event,_Ref,Flags}, _From, State) ->
 	    end
     end;
 handle_call({close_event,_Ref,Flags}, _From, State) ->
-    case widget_lookup(Flags) of
-	E={error,_} ->
-	    {reply,E,State};
-	{ok,W} ->
-	    State1 = widget_delete(W, State),
-	    self() ! refresh,
-	    {reply, ok, State1}
+    case find_id(Flags) of
+	false ->
+	    {reply,{error,missing_id},State};
+	{id,ID} ->
+	    case widget_find(ID) of
+		error ->
+		    {reply,{error,enoent}, State};
+		{ok,W} ->
+		    State1 = widget_delete(W, State),
+		    GID = W#widget.window++"."++ID,
+		    hex_tree_db:delete(State1#state.wtree, GID),
+		    self() ! refresh,
+		    {reply, ok, State1}
+	    end
     end;
 handle_call({get_event,ID,Flags},_From,State) ->
     case widget_find(ID) of
@@ -424,9 +431,7 @@ handle_info({epx_event,Win,Event}, State) ->
     end;
 handle_info(refresh, State) ->
     {noreply, redraw_schedule(State)};
-
-
-handle_info({timeout,TRef,redraw}, State) 
+handle_info({timeout,TRef,redraw}, State)
   when TRef =:= State#state.redraw_timer ->
     %% lager:debug("redraw"),
     put(animations, false),
@@ -1186,7 +1191,6 @@ widget_delete(#widget{id=Wid,type=Type}, State) ->
 	    end,
     State#state { wset=Wset1 }.
 
-
 %% fold over windows
 fold_windows(Fun, Acc, State) ->
     sets:fold(fun(Wid,Acc1) ->
@@ -1233,6 +1237,7 @@ draw_one(ID, Win, X, Y, State) ->
 	    lager:error("widget ~p not in the tree", [ID]),
 	    State;
 	[{_,Wid}] ->
+	    %% io:format("draw_one: ~p\n", [Wid]),
 	    W = widget_fetch(Wid),
 	    draw_one_(ID, Win, X, Y, W, W#widget.children_first, State)
     end.
