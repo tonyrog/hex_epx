@@ -943,6 +943,8 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{height=Height});
 	{text,Text} when is_list(Text) ->
 	    widget_set(Flags, W#widget{text=Text});
+	{text,Text} when is_atom(Text) ->
+	    widget_set(Flags, W#widget{text=atom_to_list(Text)});
 	{tabs,Tabs} when is_list(Tabs) ->
 	    widget_set(Flags, W#widget{tabs=Tabs});
 	{border, Border} when is_integer(Border) ->
