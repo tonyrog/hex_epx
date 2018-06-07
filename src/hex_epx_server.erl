@@ -943,6 +943,8 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{height=Height});
 	{text,Text} when is_list(Text) ->
 	    widget_set(Flags, W#widget{text=Text});
+	{text,Text} when is_atom(Text) ->
+	    widget_set(Flags, W#widget{text=atom_to_list(Text)});
 	{tabs,Tabs} when is_list(Tabs) ->
 	    widget_set(Flags, W#widget{tabs=Tabs});
 	{border, Border} when is_integer(Border) ->
@@ -1398,7 +1400,7 @@ draw_text_box(Win, X, Y, W, Text) ->
 	    Font = W#widget.font,
 	    epx_gc:set_font(Font),
 	    Ascent = epx:font_info(Font, ascent),
-	    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
+	    set_font_color(W#widget.font_color),
 	    {TxW,TxH} = epx_font:dimension(epx_gc:current(), Text),
 	    {X1,Y1} = get_coord_xy(W,X,Y),
 	    draw_text(Win, Ascent, Text, TxW, TxH, 
@@ -1479,7 +1481,7 @@ draw_h_tabs(Win, W, I, Ascent, [{{TxW,TxH},Text}|TextDims],
     epx_gc:set_foreground_color(16#00000000),
     epx_gc:set_fill_style(none),
     epx:draw_rectangle(Win#widget.image, Xi, Yi, Width, Height),
-    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
+    set_font_color(W#widget.font_color),
     draw_text(Win, Ascent, Text, TxW, TxH, Xi, Yi,
 	      Width, Height, Halign, Valign),
     draw_h_tabs(Win, W, I+1, Ascent, TextDims,
@@ -1502,7 +1504,7 @@ draw_v_tabs(Win, W, I, Ascent, [{{TxW,TxH},Text}|TextDims],
     epx_gc:set_foreground_color(16#00000000),
     epx_gc:set_fill_style(none),
     epx:draw_rectangle(Win#widget.image, Xi, Yi, Width, Height),
-    epx_gc:set_foreground_color(W#widget.font_color band 16#ffffff),
+    set_font_color(W#widget.font_color),
     draw_text(Win, Ascent, Text, TxW, TxH, Xi, Yi,
 	      Width, Height, Halign, Valign),
     draw_v_tabs(Win, W, I+1, Ascent, TextDims,
@@ -1838,6 +1840,15 @@ draw_value_marker(Win,Xw,Yw,W, R) ->
 			       X, Y - (M div 2), W#widget.width-4, M)
 	    
     end.
+
+%% set font color (alpha is masked)
+%%set_font_color(Color) when is_atom(Color); is_list(Color) ->
+%%    {R,G,B} = epx_color:from_name(Color),
+%%    Color1 = (R bsl 16) + (G bsl 8) + B,
+%%    epx_gc:set_foreground_color(Color);
+set_font_color(Color) ->
+    epx_gc:set_foreground_color(Color band 16#ffffff).
+
 
 %% set foreground / fillcolor also using animatation state
 set_color(W, Color0) ->
