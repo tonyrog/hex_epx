@@ -542,9 +542,18 @@ handle_event(Event={button_press,Button,{X,Y,_}},Window,State) ->
 	false ->
 	    {noreply, State}
     end;
-handle_event(Event={button_release,Button,{_X,_Y,_}},Window,State) ->
+handle_event(Event={button_release,Button,{X,Y,_}},Window,State) ->
     case lists:member(left,Button) of
 	true ->
+	    WinID = Window#widget.id,
+	    Ws0 = [Wi#widget.id || Wi<-widgets_at_location(X,Y,WinID,State)],
+	    %% also add active widgets
+	    Ws1 = lists:foldl(fun(ID,Wsi) ->
+				      case lists:member(ID,Wsi) of
+					  false -> [ID|Wsi];
+					  true -> Wsi
+				      end
+			      end, Ws0, State#state.active),
 	    State1 = 
 		lists:foldl(
 		  fun(ID, Si) ->
@@ -560,7 +569,7 @@ handle_event(Event={button_release,Button,{_X,_Y,_}},Window,State) ->
 					  Si
 				  end
 			  end
-		  end, State, State#state.active),
+		  end, State, Ws1),
 	    {noreply, State1#state { active = [] }};
 	false ->
 	    {noreply, State}
@@ -620,7 +629,8 @@ widgets_motion([], _Event, _Window, State) ->
 
 widgets_event([W|Ws], Event, Window, State) ->
     case widget_event(Event, W, Window, State) of
-	W -> widgets_event(Ws, Event, Window, State);
+	W -> 
+	    widgets_event(Ws, Event, Window, State);
 	W1 ->
 	    ID = W1#widget.id,
 	    Active = [ID | State#state.active],
@@ -825,9 +835,14 @@ widget_event({button_press,_Button,Where}, W, Window, State) ->
 		    W#widget { value = Value }
 	    end;
 	_ ->
-	    W
+	    {X,Y,_} = Where,
+	    callback_all(W#widget.id,State#state.subs,
+			 [{press,1},
+			  {x,X-W#widget.x},
+			  {y,Y-W#widget.y}]),
+	    W#widget { state=selected }
     end;
-widget_event({button_release,_Button,_Where}, W, Window, State) ->
+widget_event({button_release,_Button,Where}, W, Window, State) ->
     case W#widget.type of
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,0}]),
@@ -837,8 +852,15 @@ widget_event({button_release,_Button,_Where}, W, Window, State) ->
 	slider ->
 	    epx:window_disable_events(Window#widget.win, [motion]),
 	    W#widget{state=normal};
+	panel ->
+	    W;
 	_ ->
-	    W
+	    {X,Y,_} = Where,
+	    callback_all(W#widget.id,State#state.subs,
+			 [{press,0},
+			  {x,X-W#widget.x},
+			  {y,Y-W#widget.y}]),
+	    W#widget { state=normal }
     end;
 widget_event({motion,_Button,Where}, W, _Window, State) ->
     case W#widget.type of
@@ -893,9 +915,10 @@ callback_all(Wid, Subs, Env) ->
 		      ok
 	      end
       end, Subs).
-
+%%
 %% note that event signals may loopback and be time consuming,
 %% better to spawn them like this.
+%%
 callback(undefined,_Signal,_Env)  ->
     ok;
 callback(Cb,Signal,Env) when is_atom(Cb) ->
@@ -1076,17 +1099,9 @@ widget_set([Option|Flags], W) ->
 	{format,F} when is_list(F) ->
 	    widget_set(Flags, W#widget{format=F});
 	{state, active} when W#widget.state =/= active ->
-	    if W#widget.type =:= button;W#widget.type =:= switch ->
-		    widget_set(Flags, W#widget{state=active, value=1});
-	       true ->
-		    widget_set(Flags, W)
-	    end;
+	    widget_set(Flags, W#widget{state=active, value=1});
 	{state, normal} when W#widget.state =/= normal ->
-	    if W#widget.type =:= button;W#widget.type =:= switch ->
-		    widget_set(Flags, W#widget{state=normal, value=0});
-	       true ->
-		    widget_set(Flags, W)
-	    end;
+	    widget_set(Flags, W#widget{state=normal, value=0});
 	{state, _S} ->
 	    lager:debug("state ~s already set ~p", [_S,W#widget.id]),
 	    widget_set(Flags, W);
@@ -1244,16 +1259,6 @@ draw_one(ID, Win, X, Y, State) ->
 	    draw_one_(ID, Win, X, Y, W, W#widget.children_first, State)
     end.
 
-draw_one(ID, Win, X, Y, ChildrenFirst, State) ->
-    case hex_tree_db:lookup(State#state.wtree,ID) of
-	[] ->
-	    lager:error("widget ~p not in the tree", [ID]),
-	    State;
-	[{_,Wid}] ->
-	    W = widget_fetch(Wid),
-	    draw_one_(ID, Win, X, Y, W, ChildrenFirst, State)
-    end.
-
 draw_one_(ID, Win, X, Y, W, true, State) ->
     if W#widget.relative ->
 	    X1 = X + W#widget.x,
@@ -1292,7 +1297,7 @@ draw_children(ID, Win, X, Y, W, State) when W#widget.type =:= panel ->
 	    Tab = lists:nth(V, W#widget.tabs),
 	    %% tree children first
 	    TabID = ID++[list_to_binary(Tab)],
-	    draw_one(TabID, Win, X, Y, false, State);
+	    draw_child(TabID, Win, X, Y, State);
        true ->
 	    lager:error("panel tab ~w not defined in ~s\n",
 			[V,W#widget.id]),
@@ -1300,6 +1305,16 @@ draw_children(ID, Win, X, Y, W, State) when W#widget.type =:= panel ->
     end;
 draw_children(ID, Win, X, Y, _W, State) ->
     draw_tree(ID, Win, X, Y, State).
+
+draw_child(ID, Win, X, Y, State) ->
+    case hex_tree_db:lookup(State#state.wtree,ID) of
+	[] ->
+	    lager:error("widget ~p not in the tree", [ID]),
+	    State;
+	[{_,Wid}] ->
+	    W = widget_fetch(Wid),
+	    draw_one_(ID, Win, X, Y, W, false, State)
+    end.
 
 
 draw_widget(W, Win, X, Y, _State) ->
