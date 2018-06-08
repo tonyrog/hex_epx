@@ -73,8 +73,8 @@
 	  x = 0   :: integer(),
 	  y = 0   :: integer(),
 	  z = 0   :: integer(),   %% define the order for overlap
-	  width  = 32 :: non_neg_integer(),
-	  height = 32 :: non_neg_integer(),
+	  width  = 0 :: non_neg_integer(),
+	  height = 0 :: non_neg_integer(),
 	  text = "",
 	  tabs = [],
 	  border  :: number(),
@@ -1460,20 +1460,24 @@ draw_widget(W, Win, X, Y, _State) ->
 
 %% draw widget button/value with centered text
 draw_text_box(Win, X, Y, W, Text) ->
-    draw_background(Win, X, Y, W),
     if is_list(Text), Text =/= "" ->
 	    Font = W#widget.font,
 	    epx_gc:set_font(Font),
 	    Ascent = epx:font_info(Font, ascent),
-	    set_font_color(W#widget.font_color),
 	    {TxW,TxH} = epx_font:dimension(epx_gc:current(), Text),
 	    {X1,Y1} = get_coord_xy(W,X,Y),
-	    draw_text(Win, Ascent, Text, TxW, TxH, 
-		      X1, Y1,
-		      W#widget.width, W#widget.height,
-		      W#widget.halign, W#widget.valign);
+	    Width = if W#widget.width =:= 0 -> TxW; 
+		       true -> W#widget.width 
+		    end,
+	    Height = if W#widget.height =:= 0 -> TxH; 
+			true -> W#widget.height
+		     end,
+	    draw_background(Win,X,Y,Width,Height,W),
+	    set_font_color(W#widget.font_color),
+	    draw_text(Win,Ascent,Text,TxW,TxH, 
+		      X1,Y1,Width,Height,W#widget.halign,W#widget.valign);
        true ->
-	    ok
+	    draw_background(Win, X, Y, W)
     end.
 
 get_coord_xy(W,X0,Y0) ->
@@ -1595,19 +1599,20 @@ draw_text(Win, Ascent, Text, TxW, TxH, X, Y, Width, Height, Halign, Valign) ->
     Y1 = Y + Yd + Ascent,
     epx:draw_string(Win#widget.image, X1, Y1, Text).
 
+draw_background(Win, X, Y, W=#widget {width=Width, height=Height}) ->
+    draw_background(Win, X, Y, Width, Height, W).
 
-draw_background(Win, X, Y, W) ->
-    #widget {min=Min, max=Max, width=Width, height=Height} = W,
-   
+draw_background(Win, X, Y, Width, Height, 
+		W = #widget {min=Min, max=Max}) ->
     if W#widget.color2 =/= undefined,
        Min =/= undefined, Max =/= undefined ->
-	    draw_split_background(Win,X,Y,W);
+	    draw_split_background(Win,X,Y,Width,Height,W);
        W#widget.image2 =/= undefined,
        Min =/= undefined, Max =/= undefined ->
-	    draw_split_background(Win,X,Y,W);
+	    draw_split_background(Win,X,Y,Width,Height,W);
        W#widget.animation2 =/= undefined,
        Min =/= undefined, Max =/= undefined ->
-	    draw_split_background(Win,X,Y,W);
+	    draw_split_background(Win,X,Y,Width,Height,W);
        true ->
 	    #widget {color = Color, image = Image, animation = Anim,
 		     frame = Frame } = W,
@@ -1653,8 +1658,11 @@ draw_background(Win, X, Y, W) ->
 	    end
     end.
 
-draw_split_background(Win,X,Y,W=#widget {orientation = horizontal}) ->
-    #widget {width=Width, height=Height} = W,
+draw_split_background(Win,X,Y,W=#widget{width=Width,height=Height}) ->
+    draw_split_background(Win,X,Y,Width,Height,W).
+
+draw_split_background(Win,X,Y,Width,Height,
+		      W=#widget {orientation = horizontal}) ->
     #widget {color = Color, image = Image, 
 	     animation = Anim, frame = Frame} = W,
     #widget {color2 = Color2, image2 = Image2, 
@@ -1666,8 +1674,8 @@ draw_split_background(Win,X,Y,W=#widget {orientation = horizontal}) ->
     draw_one_background(Win, W, X + trunc(R*Width), Y,
 			Width - trunc(R*Width), Height, 
 			2, Color2, Image2, Anim2, Frame2);
-draw_split_background(Win,X,Y,W=#widget {orientation = vertical}) ->
-    #widget {width=Width, height=Height} = W,
+draw_split_background(Win,X,Y,Width,Height,
+		      W=#widget {orientation = vertical}) ->
     #widget {color = Color, image = Image,
 	     animation = Anim, frame = Frame } = W,
     #widget {color2 = Color2, image2 = Image2,
