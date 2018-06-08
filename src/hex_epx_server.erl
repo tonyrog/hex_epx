@@ -68,6 +68,8 @@
 	  window :: string(), %% id of base window (if type != window)
 	  state  = normal,    %% or active,selected,closed ..
 	  static = false,     %% object may not be deleted
+	  hidden = false,     %% show/hiden false,true,all,none
+	  disabled = false,   %% enable disable event input false,true,all,none
 	  x = 0   :: integer(),
 	  y = 0   :: integer(),
 	  z = 0   :: integer(),   %% define the order for overlap
@@ -118,7 +120,7 @@
 -record(state, {
 	  joined :: boolean(),       %% joined hex server
 	  redraw_timer = undefined,
-	  active = [] :: [term()],   %% active widgets pressed
+	  active = [] :: [#widget{}],   %% active widgets pressed
 	  subs = [] :: [#sub{}],
 	  fps = 30.0 :: number(),       %% animation frames per second
 	  mpf = 1000/30.0 :: number(),  %% millis per frame
@@ -525,61 +527,58 @@ handle_event({key_press,_Sym,_Mod,_Code},_W,State) ->
     {noreply, State};
 handle_event({key_release,_Sym,_Mod,_Code},_W,State) ->
     {noreply, State};
-handle_event(Event={button_press,Button,{X,Y,_}},Window,State) ->
+handle_event(Event={button_press,Button,Where},Window,State) ->
     case lists:member(left,Button) of
 	true ->
 	    %% locate an active widget at position (X,Y)
 	    WinID = Window#widget.id,
 	    lager:debug("Window = ~p\n", [WinID]),
-	    case widgets_at_location(X,Y,WinID,State) of
+	    case widgets_at_location(Where,{0,0},WinID,State) of
 		[] ->
 		    {noreply, State};
 		Ws ->
-		    lager:debug("selected ws=~p", [[Wi#widget.id||Wi<-Ws]]),
-		    State1 = widgets_event(Ws, Event, Window, State),
+		    lager:debug("selected ws=~p", [[Wi#widget.id||{Wi,_}<-Ws]]),
+		    State1 = widgets_event(Ws,Event,Window,State),
 		    {noreply, State1}
 	    end;
 	false ->
 	    {noreply, State}
     end;
-handle_event(Event={button_release,Button,{X,Y,_}},Window,State) ->
+handle_event(Event={button_release,Button,Where},Window,State) ->
     case lists:member(left,Button) of
 	true ->
 	    WinID = Window#widget.id,
-	    Ws0 = [Wi#widget.id || Wi<-widgets_at_location(X,Y,WinID,State)],
-	    %% also add active widgets
-	    Ws1 = lists:foldl(fun(ID,Wsi) ->
-				      case lists:member(ID,Wsi) of
-					  false -> [ID|Wsi];
-					  true -> Wsi
-				      end
-			      end, Ws0, State#state.active),
+	    Ws0 = widgets_at_location(Where,{0,0},WinID,State),
+	    %% also add active widgets not already on the list
+	    Ws1 = lists:foldl(
+		    fun(Wo={W,_Offs},Ws) ->
+			    case widget_member(W, Ws) of
+				false -> [Wo|Ws];
+				true -> Ws
+			    end
+		    end, Ws0, State#state.active),
 	    State1 = 
 		lists:foldl(
-		  fun(ID, Si) ->
-			  case widget_find(ID) of
-			      error -> Si;
-			      {ok,W} ->
-				  case widget_event(Event, W, Window, Si) of
-				      W ->
-					  Si; %% no changed
-				      W1 ->
-					  widget_store(W1),
-					  self() ! refresh,
-					  Si
-				  end
+		  fun({W,Offs},Si) ->
+			  case widget_event(Event,W,Offs,Window,Si) of
+			      W ->
+				  Si; %% no changed
+			      W1 ->
+				  widget_store(W1),
+				  self() ! refresh,
+				  Si
 			  end
 		  end, State, Ws1),
 	    {noreply, State1#state { active = [] }};
 	false ->
 	    {noreply, State}
     end;
-handle_event(Event={motion,Button,{X,Y,_}},Window,State) ->
+handle_event(Event={motion,Button,Where},Window,State) ->
     case lists:member(left,Button) of
 	true ->
 	    %% locate an active widget at position (X,Y)
 	    WinID = Window#widget.id,
-	    case widgets_at_location(X,Y,WinID,State) of
+	    case widgets_at_location(Where,{0,0},WinID,State) of
 		[] ->
 		    {noreply, State};
 		Ws ->
@@ -607,7 +606,7 @@ handle_event(Event=close,Window,State) ->
 	    {noreply, State};
        true ->
 	    unmap_window(Window,State),
-	    Window1 = widget_event(Event, Window, Window, State),
+	    Window1 = widget_event(Event,Window,{0,0},Window,State),
 	    State1 = widget_delete(Window1, State),
 	    self() ! refresh,
 	    {noreply, State1}
@@ -616,67 +615,95 @@ handle_event(_Event,_W,State) ->
     lager:error("unknown event: ~p", [_Event]),
     {noreply, State}.
 
-widgets_motion([W|Ws], Event, Window, State) ->
-    case widget_event(Event, W, Window, State) of
-	W -> widgets_motion(Ws, Event, Window, State);
+
+%% member in widget,offset list
+widget_member(W, [{W1,_}|Ws]) ->
+    if W#widget.id =:= W1#widget.id -> true;
+       true -> widget_member(W, Ws)
+    end;
+widget_member(_W, []) ->
+    false.
+
+
+widgets_motion([{W,Offs}|Ws],Event,Window,State) ->
+    case widget_event(Event,W,Offs,Window,State) of
+	W -> 
+	    widgets_motion(Ws,Event,Window,State);
 	W1 ->
 	    widget_store(W1),
 	    self() ! refresh,
-	    widgets_motion(Ws, Event, Window, State)
+	    widgets_motion(Ws,Event,Window,State)
     end;
-widgets_motion([], _Event, _Window, State) ->
+widgets_motion([],_Event,_Window,State) ->
     State.
 
-widgets_event([W|Ws], Event, Window, State) ->
-    case widget_event(Event, W, Window, State) of
+widgets_event([{W,Offs}|Ws],Event,Window,State) ->
+    case widget_event(Event,W,Offs,Window,State) of
 	W -> 
-	    widgets_event(Ws, Event, Window, State);
+	    widgets_event(Ws,Event,Window,State);
 	W1 ->
-	    ID = W1#widget.id,
-	    Active = [ID | State#state.active],
+	    Active = [{W1,Offs}|State#state.active],
 	    widget_store(W1),
 	    self() ! refresh,
-	    widgets_event(Ws, Event, Window, State#state { active = Active })
+	    widgets_event(Ws,Event,Window,State#state { active=Active })
     end;
-widgets_event([], _Event, _Window, State) ->
+widgets_event([],_Event,_Window,State) ->
     State.
     
 %%
 %% Find all widgets in window WinID that is hit by the
-%% point (X,Y). Return a Z sorted list
+%% point (X,Y). 
+%% FIXME? Return a Z sorted list
 %%
-widgets_at_location(X,Y,WinID,State) ->
-    Ws = select_tree(WinID,X,Y,[],State),
+widgets_at_location(Pos,Offs,WinID,State) ->
+    Ws = select_tree(WinID,Pos,Offs,[],State),
     %% sort according to Z order
     %% lists:sort(fun(A,B) -> A#widget.z > B#widget.z end, Ws).
     lists:reverse(Ws).
 
-select_tree(?EOT,_X,_Y,Acc,_State) ->
+select_tree(?EOT,_Pos,_Offs,Acc,_State) ->
     Acc;
-select_tree(ID,X,Y,Acc,State) ->
+select_tree(ID,Pos,Offs,Acc,State) ->
     ChildID = hex_tree_db:first_child(State#state.wtree, ID),
-    select_siblings(ChildID,X,Y,Acc,State).
+    select_siblings(ChildID,Pos,Offs,Acc,State).
 
-select_siblings(?EOT,_X,_Y,Acc,_State) ->
+select_siblings(?EOT,_Pos,_Offs,Acc,_State) ->
     Acc;
-select_siblings(ID,X,Y,Acc,State) ->
-    Acc1 = select_one(ID,X,Y,Acc,true,State),
+select_siblings(ID,Pos,Offs,Acc,State) ->
+    Acc1 = select_one(ID,Pos,Offs,Acc,true,State),
     NextSibling = hex_tree_db:next_sibling(State#state.wtree, ID),
-    select_siblings(NextSibling,X,Y,Acc1,State).
+    select_siblings(NextSibling,Pos,Offs,Acc1,State).
 
-select_one(ID,X,Y,Acc,ChildrenFirst,State) ->
+select_one(ID,Pos,Offs,Acc,ChildrenFirst,State) ->
     [{_,Wid}] = hex_tree_db:lookup(State#state.wtree,ID),
     W = widget_fetch(Wid),
     if ChildrenFirst ->
-	    Acc1 = select_children(W,ID,X,Y,Acc,State),
-	    select_widget(W,X,Y,Acc1,State);
+	    if W#widget.relative ->
+		    {Xo,Yo} = Offs,
+		    Offs1 = {Xo + W#widget.x,Yo + W#widget.y},
+		    Acc1 = select_children(W,ID,Pos,Offs1,Acc,State),
+		    select_widget(W,Pos,Offs1,Acc1,State);
+	       true ->
+		    Acc1 = select_children(W,ID,Pos,Offs,Acc,State),
+		    select_widget(W,Pos,Offs,Acc1,State)
+	    end;
        true ->
-	    Acc1 = select_widget(W,X,Y,Acc,State),
-	    select_children(W,ID,X,Y,Acc1,State)
+	    if W#widget.relative ->
+		    {Xo,Yo} = Offs,
+		    Offs1 = {Xo + W#widget.x,Yo + W#widget.y},
+		    Acc1 = select_widget(W,Pos,Offs1,Acc,State),
+		    select_children(W,ID,Pos,Offs1,Acc1,State);
+	       true ->
+		    Acc1 = select_widget(W,Pos,Offs,Acc,State),
+		    select_children(W,ID,Pos,Offs,Acc1,State)
+	    end
     end.
 
-select_children(W,ID,X,Y,Acc,State) when W#widget.type =:= panel ->
-    case tab_at_location(W,X,Y) of
+select_children(W,_ID,_Pos,_Offs,Acc,_State) 
+  when W#widget.disabled =:= true; W#widget.disabled =:= all ->
+    Acc;
+select_children(W,ID,Pos,Offs,Acc,State) when W#widget.type =:= panel ->
+    case tab_at_location(W,Pos,Offs) of
 	0 -> %% check in current tab
 	    V = W#widget.value,
 	    N = length(W#widget.tabs),
@@ -686,7 +713,7 @@ select_children(W,ID,X,Y,Acc,State) when W#widget.type =:= panel ->
 	       V >= 1, V =< N ->
 		    Tab = lists:nth(V, W#widget.tabs),
 		    TabID = ID++[list_to_binary(Tab)],
-		    select_one(TabID,X,Y,Acc,false,State);
+		    select_one(TabID,Pos,Offs,Acc,false,State);
 	       true ->
 		    lager:error("panel tab ~w not defined in ~s\n",
 				[V,W#widget.id]),
@@ -694,53 +721,56 @@ select_children(W,ID,X,Y,Acc,State) when W#widget.type =:= panel ->
 	    end;
 	_Tab ->
 	    ?dbg("tab at (~w,~w) = ~w\n", [X,Y,_Tab]),
-	    [W|Acc]
+	    [{W,Offs}|Acc]
     end;
-select_children(_W,ID,X,Y,Acc,State) ->
-    select_tree(ID,X,Y,Acc,State).
+select_children(_W,ID,Pos,Offs,Acc,State) ->
+    select_tree(ID,Pos,Offs,Acc,State).
 
-select_widget(W,X,Y,Acc,_State) ->
-    case in_bounding_box(W, X, Y) of
+select_widget(W,_Pos,_Offs,Acc,_State)
+  when W#widget.disabled =:= true; W#widget.disabled =:= all ->
+    Acc;
+select_widget(W,Pos={X,Y,_Z},Offs,Acc,_State) ->
+    case in_bounding_box(W,X,Y,Offs) of
 	true ->
-	    [W|Acc];
+	    [{W,Offs}|Acc];
 	false ->
-	    case topimage_at_location(W,X,Y,
-				      W#widget.topimage) of
+	    case topimage_at_location(W,Pos,Offs,W#widget.topimage) of
 		true ->
-		    [W|Acc];
+		    [{W,Offs}|Acc];
 		false ->
 		    Acc
 	    end
     end.
 
-
 %% Check if (X,Y) is within any of the panel tabs
-tab_at_location(W,X,Y) ->
+tab_at_location(W,{X,Y,_Z},Offs) ->
     {_Ascent,TextDims,MaxW,MaxH} = tabs_item_box(W),
     N = length(TextDims),
     Width =  (MaxW+?TABS_X_PAD),
     Height = (MaxH+?TABS_Y_PAD),
+    {Xi,Yi} = widget_pos(W,Offs),
     case W#widget.orientation of
 	horizontal ->
 	    Xoffs = (W#widget.width - (Width*N)) div 2,
-	    X0 = W#widget.x + Xoffs,
-	    Y0 = W#widget.y + ?TABS_Y_OFFSET,
+	    X0 = Xi + Xoffs,
+	    Y0 = Yi + ?TABS_Y_OFFSET,
 	    case in_rect(X,Y,X0,Y0,Width*N,Height) of
 		false -> 0;
 		true  -> ((X-Xoffs) div Width)+1
 	    end;
 	vertical ->
 	    Yoffs = (W#widget.height - (Height*N)) div 2,
-	    Y0 = W#widget.y + Yoffs,
-	    X0 = W#widget.x + ?TABS_X_OFFSET,
+	    Y0 = Yi + Yoffs,
+	    X0 = Xi + ?TABS_X_OFFSET,
 	    case in_rect(X,Y,X0,Y0,Width,Height*N) of
 		false -> 0;
 		true -> ((Y-Yoffs) div Height)+1
 	    end
     end.
 
-in_bounding_box(W, X, Y) ->
-    in_rect(X,Y,W#widget.x,W#widget.y, W#widget.width, W#widget.height).
+in_bounding_box(W,X,Y,Offs) ->
+    {Xi,Yi} = widget_pos(W,Offs),
+    in_rect(X,Y,Xi,Yi,W#widget.width, W#widget.height).
 
 in_rect(X,Y,Xr,Yr,Wr,Hr) ->
     if X >= Xr, X < Xr + Wr, Y >= Yr, Y < Yr + Hr -> true;
@@ -750,20 +780,30 @@ in_rect(X,Y,Xr,Yr,Wr,Hr) ->
 %%
 %% Check if (X,Y) hit inside a topimage (used in slider)
 %%
-topimage_at_location(_W,_X,_Y,undefined) ->
+topimage_at_location(_W,_Pos,_Offs,undefined) ->
     false;
-topimage_at_location(W=#widget {orientation = horizontal},X,Y,Image) ->
+topimage_at_location(W=#widget {orientation=horizontal},{X,Y,_},Offs,Image) ->
     Height = epx:pixmap_info(Image,height),
-    Y1 = W#widget.y + (W#widget.height - Height) div 2,
-    Y2 = W#widget.y + (W#widget.height + Height) div 2,
-    (X >= W#widget.x) andalso (X < W#widget.x + W#widget.width) andalso
-	(Y >= Y1) andalso (Y =< Y2);
-topimage_at_location(W=#widget {orientation = vertical},X,Y,Image) ->
+    {Xi,Yi} = widget_pos(W,Offs),
+    Y1 = Yi + (W#widget.height - Height) div 2,
+    Y2 = Yi + (W#widget.height + Height) div 2,
+    (X >= Xi) andalso (X < Xi + W#widget.width) 
+	andalso (Y >= Y1) andalso (Y =< Y2);
+topimage_at_location(W=#widget {orientation=vertical},{X,Y,_},Offs,Image) ->
     Width = epx:pixmap_info(Image,width),
-    X1 = W#widget.x + (W#widget.width - Width) div 2,
-    X2 = W#widget.x + (W#widget.width + Width) div 2,
-    (Y >= W#widget.y) andalso (Y < W#widget.y + W#widget.height) andalso
-	(X >= X1) andalso (X =< X2).
+    {Xi,Yi} = widget_pos(W,Offs),
+    X1 = Xi + (W#widget.width - Width) div 2,
+    X2 = Xi + (W#widget.width + Width) div 2,
+    (Y >= Yi) andalso (Y < Yi + W#widget.height) 
+	andalso (X >= X1) andalso (X =< X2).
+
+widget_pos(W, Offs) ->
+    if W#widget.relative ->
+	    {Xo,Yo} = Offs,
+	    {W#widget.x+Xo, W#widget.y+Yo};
+       true ->
+	    {W#widget.x, W#widget.y}
+    end.
 
 -ifdef(not_used).
 image_at_location(_W,_X,_Y,undefined) ->
@@ -797,7 +837,7 @@ animation_at_location(W,X,Y,Anim) ->
       
 
 %% generate a callback event and start animate the button
-widget_event({button_press,_Button,Where}, W, Window, State) ->
+widget_event({button_press,_Button,Where},W,Offs,Window,State) ->
     case W#widget.type of
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,1}]),
@@ -813,8 +853,7 @@ widget_event({button_press,_Button,Where}, W, Window, State) ->
 	    W#widget { frame=Value, state=WState, value=Value };
 
 	slider ->
-	    {X,Y,_} = Where,
-	    case widget_slider_value(W, X, Y) of
+	    case widget_slider_value(W,Where,Offs) of
 		false ->
 		    lager:debug("slider min/max/width error"),
 		    W;
@@ -824,8 +863,7 @@ widget_event({button_press,_Button,Where}, W, Window, State) ->
 		    W#widget { state=active, value = Value }
 	    end;
 	panel ->
-	    {X,Y,_} = Where,
-	    case tab_at_location(W,X,Y) of
+	    case tab_at_location(W,Where,Offs) of
 		0 ->
 		    lager:debug("panel box select error"),
 		    W;
@@ -835,14 +873,13 @@ widget_event({button_press,_Button,Where}, W, Window, State) ->
 		    W#widget { value = Value }
 	    end;
 	_ ->
+	    {Xi,Yi} = widget_pos(W,Offs),
 	    {X,Y,_} = Where,
 	    callback_all(W#widget.id,State#state.subs,
-			 [{press,1},
-			  {x,X-W#widget.x},
-			  {y,Y-W#widget.y}]),
+			 [{press,1},{x,X-Xi},{y,Y-Yi}]),
 	    W#widget { state=selected }
     end;
-widget_event({button_release,_Button,Where}, W, Window, State) ->
+widget_event({button_release,_Button,Where},W,Offs,Window,State) ->
     case W#widget.type of
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,0}]),
@@ -855,18 +892,16 @@ widget_event({button_release,_Button,Where}, W, Window, State) ->
 	panel ->
 	    W;
 	_ ->
+	    {Xi,Yi} = widget_pos(W,Offs),
 	    {X,Y,_} = Where,
 	    callback_all(W#widget.id,State#state.subs,
-			 [{press,0},
-			  {x,X-W#widget.x},
-			  {y,Y-W#widget.y}]),
+			 [{press,0},{x,X-Xi},{y,Y-Yi}]),
 	    W#widget { state=normal }
     end;
-widget_event({motion,_Button,Where}, W, _Window, State) ->
+widget_event({motion,_Button,Where},W,Offs,_Window,State) ->
     case W#widget.type of
 	slider ->
-	    {X,Y,_} = Where,
-	    case widget_slider_value(W, X, Y) of
+	    case widget_slider_value(W,Where,Offs) of
 		false -> W;
 		Value ->
 		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
@@ -875,18 +910,20 @@ widget_event({motion,_Button,Where}, W, _Window, State) ->
 	_ ->
 	    W
     end;
-widget_event(close, W, _Window, State) ->
+widget_event(close,W,_Offs,_Window,State) ->
     callback_all(W#widget.id,State#state.subs,[{closed,true}]),
     W#widget { state=closed };
-widget_event(_Event, W, _Window, _State) ->
+widget_event(_Event,W,_Offs,_Window,_State) ->
     W.
 
 %% Calcuate the slider value given coordinate X,Y either horizontal or
 %% vertical. return a floating point value between 0 and 1
-widget_slider_value(W=#widget {min=Min,max=Max,orientation=horizontal},X,_Y) ->
+widget_slider_value(W=#widget {min=Min,max=Max,orientation=horizontal},
+		    {X,_Y,_Z},{Xo,_Yo}) ->
+    Xi = if W#widget.relative -> W#widget.x+Xo; true -> W#widget.x end,
     Width = W#widget.width-2,
     if is_number(Min), is_number(Max), Width > 0 ->
-	    X0 = W#widget.x+1,
+	    X0 = Xi+1,
 	    X1 = X0 + Width - 1,
 	    Xv = clamp(X, X0, X1),
 	    R = (Xv - X0) / (X1 - X0),
@@ -894,10 +931,12 @@ widget_slider_value(W=#widget {min=Min,max=Max,orientation=horizontal},X,_Y) ->
        true ->
 	    false
     end;
-widget_slider_value(W=#widget {min=Min, max=Max, orientation=vertical},_X,Y) ->
+widget_slider_value(W=#widget {min=Min, max=Max,orientation=vertical},
+		    {_X,Y,_Z},{_Xo,Yo}) ->
+    Yi = if W#widget.relative -> W#widget.y+Yo; true -> W#widget.y end,
     Height = W#widget.height-2,
     if is_number(Min), is_number(Max), Height > 0 ->
-	    Y1 = W#widget.y+1,
+	    Y1 = Yi+1,
 	    Y0 = Y1 + Height - 1,
 	    Yv = clamp(Y, Y1, Y0),
 	    R = (Y0 - Yv) / (Y0 - Y1),
@@ -946,6 +985,10 @@ widget_set([Option|Flags], W) ->
 	    widget_set(Flags, W#widget{id=id_string(ID)});
 	{static,Bool} when is_boolean(Bool) -> 
 	    widget_set(Flags, W#widget{static=Bool});
+	{hidden,Arg} when is_boolean(Arg); Arg =:= none; Arg =:= all -> 
+	    widget_set(Flags, W#widget{hidden=Arg});
+	{disabled,Arg} when is_boolean(Arg); Arg =:= none; Arg =:= all -> 
+	    widget_set(Flags, W#widget{disabled=Arg});
 	{x,X} when is_integer(X) ->
 	    widget_set(Flags, W#widget{x=X});
 	{y,Y} when is_integer(Y) ->
@@ -1120,6 +1163,8 @@ widget_get([Flag|Flags], W, Acc) ->
 	type -> widget_get(Flags, W, [{type,W#widget.type}|Acc]);
 	id -> widget_get(Flags, W, [{type,W#widget.id}|Acc]);
 	static -> widget_get(Flags, W, [{static,W#widget.static}|Acc]);
+	hidden -> widget_get(Flags, W, [{hidden,W#widget.hidden}|Acc]);
+	disabled -> widget_get(Flags, W, [{disabled,W#widget.disabled}|Acc]);
 	x -> widget_get(Flags, W, [{x,W#widget.x}|Acc]);
 	y -> widget_get(Flags, W, [{y,W#widget.y}|Acc]);
 	z -> widget_get(Flags, W, [{y,W#widget.z}|Acc]);
@@ -1286,7 +1331,9 @@ draw_one_(ID, Win, X, Y, W, false, State) ->
 	    draw_children(ID, Win, X1, Y1, W, State)
     end.
 
-
+%% Fixme: implement hidden =:= none to override all hidden children!
+draw_children(_ID, _Win, _X, _Y, W, State) when W#widget.hidden =:= all ->
+    State;
 draw_children(ID, Win, X, Y, W, State) when W#widget.type =:= panel ->
     V = W#widget.value,
     N = length(W#widget.tabs),
@@ -1317,6 +1364,9 @@ draw_child(ID, Win, X, Y, State) ->
     end.
 
 
+draw_widget(W, _Win, _X, _Y, _State) when 
+      W#widget.hidden =:= true; W#widget.hidden =:= all ->
+    ok;
 draw_widget(W, Win, X, Y, _State) ->
     case W#widget.type of
 	window ->
@@ -1817,20 +1867,20 @@ draw_topimage(Win,Xw,Yw, W, TopImage, R) ->
 		[W#widget.topimage, W#widget.orientation, R]),
     Width = epx:pixmap_info(TopImage,width),
     Height = epx:pixmap_info(TopImage,height),
-    {X, Y} = case W#widget.orientation of
-		 horizontal ->
-		     X0 = Xw,
-		     X1 = Xw + W#widget.width - 1,
-		     Xv = trunc(X0*(1-R) + X1*R),
-		     {Xv - (Width div 2),
-		      Yw + (W#widget.height- Height) div 2};
-		 vertical ->
-		     Y0 = Yw + W#widget.height - 1,
-		     Y1 = Yw,
-		     Yv = trunc(Y0*(1-R) + Y1*R),
-		     {Xw + (W#widget.width - Width) div 2,
-		      (Yv - (Height div 2))}
-	     end,
+    {X,Y} = case W#widget.orientation of
+		horizontal ->
+		    X0 = Xw,
+		    X1 = Xw + W#widget.width - 1,
+		    Xv = trunc(X0*(1-R) + X1*R),
+		    {Xv - (Width div 2),
+		     Yw + (W#widget.height- Height) div 2};
+		vertical ->
+		    Y0 = Yw + W#widget.height - 1,
+		    Y1 = Yw,
+		    Yv = trunc(Y0*(1-R) + Y1*R),
+		    {Xw + (W#widget.width - Width) div 2,
+		     (Yv - (Height div 2))}
+	    end,
     epx:pixmap_copy_area(TopImage,
 			 Win#widget.image,
 			 0, 0, X, Y, Width, Height,
