@@ -624,9 +624,8 @@ widget_member(W, [{W1,_}|Ws]) ->
 widget_member(_W, []) ->
     false.
 
-
-widgets_motion([{W,Offs}|Ws],Event,Window,State) ->
-    case widget_event(Event,W,Offs,Window,State) of
+widgets_motion([{W,XY}|Ws],Event,Window,State) ->
+    case widget_event(Event,W,XY,Window,State) of
 	W -> 
 	    widgets_motion(Ws,Event,Window,State);
 	W1 ->
@@ -637,12 +636,12 @@ widgets_motion([{W,Offs}|Ws],Event,Window,State) ->
 widgets_motion([],_Event,_Window,State) ->
     State.
 
-widgets_event([{W,Offs}|Ws],Event,Window,State) ->
-    case widget_event(Event,W,Offs,Window,State) of
+widgets_event([{W,XY}|Ws],Event,Window,State) ->
+    case widget_event(Event,W,XY,Window,State) of
 	W -> 
 	    widgets_event(Ws,Event,Window,State);
 	W1 ->
-	    Active = [{W1,Offs}|State#state.active],
+	    Active = [{W1,XY}|State#state.active],
 	    widget_store(W1),
 	    self() ! refresh,
 	    widgets_event(Ws,Event,Window,State#state { active=Active })
@@ -655,55 +654,42 @@ widgets_event([],_Event,_Window,State) ->
 %% point (X,Y). 
 %% FIXME? Return a Z sorted list
 %%
-widgets_at_location(Pos,Offs,WinID,State) ->
-    Ws = select_tree(WinID,Pos,Offs,[],State),
+widgets_at_location(Pos,XY,WinID,State) ->
+    Ws = select_tree(WinID,Pos,XY,[],State),
     %% sort according to Z order
     %% lists:sort(fun(A,B) -> A#widget.z > B#widget.z end, Ws).
     lists:reverse(Ws).
 
-select_tree(?EOT,_Pos,_Offs,Acc,_State) ->
+select_tree(?EOT,_Pos,_XY,Acc,_State) ->
     Acc;
-select_tree(ID,Pos,Offs,Acc,State) ->
+select_tree(ID,Pos,XY,Acc,State) ->
     ChildID = hex_tree_db:first_child(State#state.wtree, ID),
-    select_siblings(ChildID,Pos,Offs,Acc,State).
+    select_siblings(ChildID,Pos,XY,Acc,State).
 
-select_siblings(?EOT,_Pos,_Offs,Acc,_State) ->
+select_siblings(?EOT,_Pos,_XY,Acc,_State) ->
     Acc;
-select_siblings(ID,Pos,Offs,Acc,State) ->
-    Acc1 = select_one(ID,Pos,Offs,Acc,true,State),
+select_siblings(ID,Pos,XY,Acc,State) ->
+    Acc1 = select_one(ID,Pos,XY,Acc,true,State),
     NextSibling = hex_tree_db:next_sibling(State#state.wtree, ID),
-    select_siblings(NextSibling,Pos,Offs,Acc1,State).
+    select_siblings(NextSibling,Pos,XY,Acc1,State).
 
-select_one(ID,Pos,Offs,Acc,ChildrenFirst,State) ->
+select_one(ID,Pos,XY,Acc,ChildrenFirst,State) ->
     [{_,Wid}] = hex_tree_db:lookup(State#state.wtree,ID),
     W = widget_fetch(Wid),
+    XY1 = widget_pos(W,XY),
     if ChildrenFirst ->
-	    if W#widget.relative ->
-		    {Xo,Yo} = Offs,
-		    Offs1 = {Xo + W#widget.x,Yo + W#widget.y},
-		    Acc1 = select_children(W,ID,Pos,Offs1,Acc,State),
-		    select_widget(W,Pos,Offs1,Acc1,State);
-	       true ->
-		    Acc1 = select_children(W,ID,Pos,Offs,Acc,State),
-		    select_widget(W,Pos,Offs,Acc1,State)
-	    end;
+	    Acc1 = select_children(W,ID,Pos,XY1,Acc,State),
+	    select_widget(W,Pos,XY1,Acc1,State);
        true ->
-	    if W#widget.relative ->
-		    {Xo,Yo} = Offs,
-		    Offs1 = {Xo + W#widget.x,Yo + W#widget.y},
-		    Acc1 = select_widget(W,Pos,Offs1,Acc,State),
-		    select_children(W,ID,Pos,Offs1,Acc1,State);
-	       true ->
-		    Acc1 = select_widget(W,Pos,Offs,Acc,State),
-		    select_children(W,ID,Pos,Offs,Acc1,State)
-	    end
+	    Acc1 = select_widget(W,Pos,XY1,Acc,State),
+	    select_children(W,ID,Pos,XY1,Acc1,State)
     end.
 
-select_children(W,_ID,_Pos,_Offs,Acc,_State) 
+select_children(W,_ID,_Pos,_XY,Acc,_State) 
   when W#widget.disabled =:= true; W#widget.disabled =:= all ->
     Acc;
-select_children(W,ID,Pos,Offs,Acc,State) when W#widget.type =:= panel ->
-    case tab_at_location(W,Pos,Offs) of
+select_children(W,ID,Pos,XY,Acc,State) when W#widget.type =:= panel ->
+    case tab_at_location(W,Pos,XY) of
 	0 -> %% check in current tab
 	    V = W#widget.value,
 	    N = length(W#widget.tabs),
@@ -713,7 +699,7 @@ select_children(W,ID,Pos,Offs,Acc,State) when W#widget.type =:= panel ->
 	       V >= 1, V =< N ->
 		    Tab = lists:nth(V, W#widget.tabs),
 		    TabID = ID++[list_to_binary(Tab)],
-		    select_one(TabID,Pos,Offs,Acc,false,State);
+		    select_one(TabID,Pos,XY,Acc,false,State);
 	       true ->
 		    lager:error("panel tab ~w not defined in ~s\n",
 				[V,W#widget.id]),
@@ -721,56 +707,51 @@ select_children(W,ID,Pos,Offs,Acc,State) when W#widget.type =:= panel ->
 	    end;
 	_Tab ->
 	    ?dbg("tab at (~w,~w) = ~w\n", [X,Y,_Tab]),
-	    [{W,Offs}|Acc]
+	    [{W,XY}|Acc]
     end;
-select_children(_W,ID,Pos,Offs,Acc,State) ->
-    select_tree(ID,Pos,Offs,Acc,State).
+select_children(_W,ID,Pos,XY,Acc,State) ->
+    select_tree(ID,Pos,XY,Acc,State).
 
-select_widget(W,_Pos,_Offs,Acc,_State)
+select_widget(W,_Pos,_XY,Acc,_State)
   when W#widget.disabled =:= true; W#widget.disabled =:= all ->
     Acc;
-select_widget(W,Pos={X,Y,_Z},Offs,Acc,_State) ->
-    case in_bounding_box(W,X,Y,Offs) of
+select_widget(W,Pos={Xi,Yi,_Z},XY={X,Y},Acc,_State) ->
+    case in_rect(Xi,Yi,X,Y,W#widget.width,W#widget.height) of
 	true ->
-	    [{W,Offs}|Acc];
+	    [{W,XY}|Acc];
 	false ->
-	    case topimage_at_location(W,Pos,Offs,W#widget.topimage) of
+	    case topimage_at_location(W,Pos,XY,W#widget.topimage) of
 		true ->
-		    [{W,Offs}|Acc];
+		    [{W,XY}|Acc];
 		false ->
 		    Acc
 	    end
     end.
 
 %% Check if (X,Y) is within any of the panel tabs
-tab_at_location(W,{X,Y,_Z},Offs) ->
+tab_at_location(W,{Xi,Yi,_Z},XY={Xw,Yw}) ->
     {_Ascent,TextDims,MaxW,MaxH} = tabs_item_box(W),
     N = length(TextDims),
     Width =  (MaxW+?TABS_X_PAD),
     Height = (MaxH+?TABS_Y_PAD),
-    {Xi,Yi} = widget_pos(W,Offs),
     case W#widget.orientation of
 	horizontal ->
 	    Xoffs = (W#widget.width - (Width*N)) div 2,
-	    X0 = Xi + Xoffs,
-	    Y0 = Yi + ?TABS_Y_OFFSET,
-	    case in_rect(X,Y,X0,Y0,Width*N,Height) of
+	    X0 = Xw + Xoffs,
+	    Y0 = Yw + ?TABS_Y_OFFSET,
+	    case in_rect(Xi,Yi,X0,Y0,Width*N,Height) of
 		false -> 0;
-		true  -> ((X-Xoffs) div Width)+1
+		true  -> ((Xi-Xoffs) div Width)+1
 	    end;
 	vertical ->
 	    Yoffs = (W#widget.height - (Height*N)) div 2,
-	    Y0 = Yi + Yoffs,
-	    X0 = Xi + ?TABS_X_OFFSET,
-	    case in_rect(X,Y,X0,Y0,Width,Height*N) of
+	    Y0 = Yw + Yoffs,
+	    X0 = Xw + ?TABS_X_OFFSET,
+	    case in_rect(Xi,Yi,X0,Y0,Width,Height*N) of
 		false -> 0;
-		true -> ((Y-Yoffs) div Height)+1
+		true -> ((Yi-Yoffs) div Height)+1
 	    end
     end.
-
-in_bounding_box(W,X,Y,Offs) ->
-    {Xi,Yi} = widget_pos(W,Offs),
-    in_rect(X,Y,Xi,Yi,W#widget.width, W#widget.height).
 
 in_rect(X,Y,Xr,Yr,Wr,Hr) ->
     if X >= Xr, X < Xr + Wr, Y >= Yr, Y < Yr + Hr -> true;
@@ -780,26 +761,26 @@ in_rect(X,Y,Xr,Yr,Wr,Hr) ->
 %%
 %% Check if (X,Y) hit inside a topimage (used in slider)
 %%
-topimage_at_location(_W,_Pos,_Offs,undefined) ->
+topimage_at_location(_W,_Pos,_XY,undefined) ->
     false;
-topimage_at_location(W=#widget {orientation=horizontal},{X,Y,_},Offs,Image) ->
+topimage_at_location(W=#widget {orientation=horizontal},{X,Y,_},
+		     XY={Xi,Yi},Image) ->
     Height = epx:pixmap_info(Image,height),
-    {Xi,Yi} = widget_pos(W,Offs),
     Y1 = Yi + (W#widget.height - Height) div 2,
     Y2 = Yi + (W#widget.height + Height) div 2,
     (X >= Xi) andalso (X < Xi + W#widget.width) 
 	andalso (Y >= Y1) andalso (Y =< Y2);
-topimage_at_location(W=#widget {orientation=vertical},{X,Y,_},Offs,Image) ->
+topimage_at_location(W=#widget {orientation=vertical},{X,Y,_},
+		     XY={Xi,Yi},Image) ->
     Width = epx:pixmap_info(Image,width),
-    {Xi,Yi} = widget_pos(W,Offs),
     X1 = Xi + (W#widget.width - Width) div 2,
     X2 = Xi + (W#widget.width + Width) div 2,
     (Y >= Yi) andalso (Y < Yi + W#widget.height) 
 	andalso (X >= X1) andalso (X =< X2).
 
-widget_pos(W, Offs) ->
+widget_pos(W, XY) ->
     if W#widget.relative ->
-	    {Xo,Yo} = Offs,
+	    {Xo,Yo} = XY,
 	    {W#widget.x+Xo, W#widget.y+Yo};
        true ->
 	    {W#widget.x, W#widget.y}
@@ -837,7 +818,7 @@ animation_at_location(W,X,Y,Anim) ->
       
 
 %% generate a callback event and start animate the button
-widget_event({button_press,_Button,Where},W,Offs,Window,State) ->
+widget_event({button_press,_Button,Where},W,XY,Window,State) ->
     case W#widget.type of
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,1}]),
@@ -853,7 +834,7 @@ widget_event({button_press,_Button,Where},W,Offs,Window,State) ->
 	    W#widget { frame=Value, state=WState, value=Value };
 
 	slider ->
-	    case widget_slider_value(W,Where,Offs) of
+	    case widget_slider_value(W,Where,XY) of
 		false ->
 		    lager:debug("slider min/max/width error"),
 		    W;
@@ -863,7 +844,7 @@ widget_event({button_press,_Button,Where},W,Offs,Window,State) ->
 		    W#widget { state=active, value = Value }
 	    end;
 	panel ->
-	    case tab_at_location(W,Where,Offs) of
+	    case tab_at_location(W,Where,XY) of
 		0 ->
 		    lager:debug("panel box select error"),
 		    W;
@@ -873,13 +854,13 @@ widget_event({button_press,_Button,Where},W,Offs,Window,State) ->
 		    W#widget { value = Value }
 	    end;
 	_ ->
-	    {Xi,Yi} = widget_pos(W,Offs),
+	    {Xi,Yi} = widget_pos(W,XY),
 	    {X,Y,_} = Where,
 	    callback_all(W#widget.id,State#state.subs,
 			 [{press,1},{x,X-Xi},{y,Y-Yi}]),
 	    W#widget { state=selected }
     end;
-widget_event({button_release,_Button,Where},W,Offs,Window,State) ->
+widget_event({button_release,_Button,Where},W,XY,Window,State) ->
     case W#widget.type of
 	button ->
 	    callback_all(W#widget.id, State#state.subs, [{value,0}]),
@@ -892,16 +873,16 @@ widget_event({button_release,_Button,Where},W,Offs,Window,State) ->
 	panel ->
 	    W;
 	_ ->
-	    {Xi,Yi} = widget_pos(W,Offs),
+	    {Xi,Yi} = widget_pos(W,XY),
 	    {X,Y,_} = Where,
 	    callback_all(W#widget.id,State#state.subs,
 			 [{press,0},{x,X-Xi},{y,Y-Yi}]),
 	    W#widget { state=normal }
     end;
-widget_event({motion,_Button,Where},W,Offs,_Window,State) ->
+widget_event({motion,_Button,Where},W,XY,_Window,State) ->
     case W#widget.type of
 	slider ->
-	    case widget_slider_value(W,Where,Offs) of
+	    case widget_slider_value(W,Where,XY) of
 		false -> W;
 		Value ->
 		    callback_all(W#widget.id,State#state.subs,[{value,Value}]),
@@ -910,10 +891,10 @@ widget_event({motion,_Button,Where},W,Offs,_Window,State) ->
 	_ ->
 	    W
     end;
-widget_event(close,W,_Offs,_Window,State) ->
+widget_event(close,W,_XY,_Window,State) ->
     callback_all(W#widget.id,State#state.subs,[{closed,true}]),
     W#widget { state=closed };
-widget_event(_Event,W,_Offs,_Window,_State) ->
+widget_event(_Event,W,_XY,_Window,_State) ->
     W.
 
 %% Calcuate the slider value given coordinate X,Y either horizontal or
@@ -1278,22 +1259,22 @@ unmap_window(Win,_State) ->
 
 
 draw_window(Win, State) ->
-    draw_tree(Win#widget.id, Win, 0, 0, State).
+    draw_tree(Win#widget.id, Win, {0,0}, State).
 
-draw_tree(?EOT, _Win, _X, _Y, State) ->
+draw_tree(?EOT, _Win, _XY, State) ->
     State;
-draw_tree(ID, Win, X, Y, State) ->
+draw_tree(ID, Win, XY, State) ->
     draw_siblings(hex_tree_db:first_child(State#state.wtree, ID), 
-		  Win, X, Y, State).
+		  Win, XY, State).
 
-draw_siblings(?EOT, _Win, _X, _Y, State) ->
+draw_siblings(?EOT, _Win, _XY, State) ->
     State;
-draw_siblings(ID, Win, X, Y, State) ->
-    State1 = draw_one(ID, Win, X, Y, State),
+draw_siblings(ID, Win, XY, State) ->
+    State1 = draw_one(ID, Win, XY, State),
     draw_siblings(hex_tree_db:next_sibling(State#state.wtree, ID), 
-		  Win, X, Y, State1).
+		  Win, XY, State1).
 
-draw_one(ID, Win, X, Y, State) ->
+draw_one(ID, Win, XY, State) ->
     case hex_tree_db:lookup(State#state.wtree,ID) of
 	[] ->
 	    lager:error("widget ~p not in the tree", [ID]),
@@ -1301,40 +1282,24 @@ draw_one(ID, Win, X, Y, State) ->
 	[{_,Wid}] ->
 	    %% io:format("draw_one: ~p\n", [Wid]),
 	    W = widget_fetch(Wid),
-	    draw_one_(ID, Win, X, Y, W, W#widget.children_first, State)
+	    draw_one_(ID, Win, XY, W, W#widget.children_first, State)
     end.
 
-draw_one_(ID, Win, X, Y, W, true, State) ->
-    if W#widget.relative ->
-	    X1 = X + W#widget.x,
-	    Y1 = Y + W#widget.y,
-	    State1 = draw_children(ID, Win, X1, Y1, W, State),
-	    draw_widget(W, Win, X1, Y1, State1),
+draw_one_(ID, Win, XY, W, ChildrenFirst, State) ->
+    XY1 = widget_pos(W,XY),
+    if ChildrenFirst ->
+	    State1 = draw_children(ID, Win, XY1, W, State),
+	    draw_widget(W, Win, XY1, State1),
 	    State1;
        true ->
-	    X1 = W#widget.x,
-	    Y1 = W#widget.y,
-	    State1 = draw_children(ID, Win, X1, Y1, W, State),
-	    draw_widget(W, Win, X1, Y1, State1),
-	    State1
-    end;
-draw_one_(ID, Win, X, Y, W, false, State) ->
-    if W#widget.relative ->
-	    X1 = X + W#widget.x,
-	    Y1 = Y + W#widget.y,
-	    draw_widget(W, Win, X1, Y1, State),
-	    draw_children(ID, Win, X1, Y1, W, State);
-       true ->
-	    X1 = W#widget.x,
-	    Y1 = W#widget.y,
-	    draw_widget(W, Win, X1, Y1, State),
-	    draw_children(ID, Win, X1, Y1, W, State)
+	    draw_widget(W, Win, XY1, State),
+	    draw_children(ID, Win, XY1, W, State)
     end.
 
 %% Fixme: implement hidden =:= none to override all hidden children!
-draw_children(_ID, _Win, _X, _Y, W, State) when W#widget.hidden =:= all ->
+draw_children(_ID, _Win, _XY, W, State) when W#widget.hidden =:= all ->
     State;
-draw_children(ID, Win, X, Y, W, State) when W#widget.type =:= panel ->
+draw_children(ID, Win, XY, W, State) when W#widget.type =:= panel ->
     V = W#widget.value,
     N = length(W#widget.tabs),
     if V =:= 0 ->
@@ -1344,30 +1309,30 @@ draw_children(ID, Win, X, Y, W, State) when W#widget.type =:= panel ->
 	    Tab = lists:nth(V, W#widget.tabs),
 	    %% tree children first
 	    TabID = ID++[list_to_binary(Tab)],
-	    draw_child(TabID, Win, X, Y, State);
+	    draw_child(TabID, Win, XY, State);
        true ->
 	    lager:error("panel tab ~w not defined in ~s\n",
 			[V,W#widget.id]),
 	    State
     end;
-draw_children(ID, Win, X, Y, _W, State) ->
-    draw_tree(ID, Win, X, Y, State).
+draw_children(ID, Win, XY, _W, State) ->
+    draw_tree(ID, Win, XY, State).
 
-draw_child(ID, Win, X, Y, State) ->
+draw_child(ID, Win, XY, State) ->
     case hex_tree_db:lookup(State#state.wtree,ID) of
 	[] ->
 	    lager:error("widget ~p not in the tree", [ID]),
 	    State;
 	[{_,Wid}] ->
 	    W = widget_fetch(Wid),
-	    draw_one_(ID, Win, X, Y, W, false, State)
+	    draw_one_(ID, Win, XY, W, false, State)
     end.
 
 
-draw_widget(W, _Win, _X, _Y, _State) when 
+draw_widget(W, _Win, _XY, _State) when 
       W#widget.hidden =:= true; W#widget.hidden =:= all ->
     ok;
-draw_widget(W, Win, X, Y, _State) ->
+draw_widget(W, Win, {X,Y}, _State) ->
     case W#widget.type of
 	window ->
 	    %% do not draw (yet), we may use this
@@ -1441,7 +1406,7 @@ draw_widget(W, Win, X, Y, _State) ->
 
 	line ->
 	    epx_gc:draw(
-	      fun() ->	
+	      fun() ->
 		      set_color(W, W#widget.color),
 		      epx:draw_line(Win#widget.image, 
 				    X, Y,
