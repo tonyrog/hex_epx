@@ -930,7 +930,7 @@ callback_all(Wid, Subs, Env) ->
     lists:foreach(
       fun(#sub{id=ID,signal=Signal,callback=Callback}) ->
 	      if ID =:= Wid ->
-		      callback(Callback,Signal,Env);
+		      callback(Callback,Signal,ID,Env);
 		 true ->
 		      ok
 	      end
@@ -939,12 +939,16 @@ callback_all(Wid, Subs, Env) ->
 %% note that event signals may loopback and be time consuming,
 %% better to spawn them like this.
 %%
-callback(undefined,_Signal,_Env)  ->
+callback(undefined,_Signal,_ID,_Env)  ->
     ok;
-callback(Cb,Signal,Env) when is_atom(Cb) ->
-    spawn(fun() -> Cb:event(Signal, Env) end);
-callback(Cb,Signal,Env) when is_function(Cb, 2) ->
-    spawn(fun() -> Cb(Signal,Env) end).
+callback(Cb,Signal,ID,Env) when is_atom(Cb) ->
+    spawn(fun() -> Cb:event(Signal,ID,Env) end);
+callback(Cb,_Signal,_ID,Env) when is_function(Cb, 1) ->
+    spawn(fun() -> Cb(Env) end);
+callback(Cb,Signal,_ID,Env) when is_function(Cb, 2) ->
+    spawn(fun() -> Cb(Signal,Env) end);
+callback(Cb,Signal,ID,Env) when is_function(Cb, 3) ->
+    spawn(fun() -> Cb(Signal,ID,Env) end).
 
 window_create(Flags) ->
     W = widget_set([{type,window}|Flags], #widget{}),
