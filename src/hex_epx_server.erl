@@ -100,7 +100,8 @@
 	  min     :: number(),          %% type=value|slider
 	  max     :: number(),          %% type=value|slider
 	  format = "~w" :: string(),    %% io_lib:format format
-	  value =0 :: number(),         %% type=value|slider
+	  value = 0 :: number(),        %% type=value|slider
+	  vscale :: number(),           %% scale value (multiplier)
 	  animate = undefined,          %% animation state.
 	  animate2 = undefined,         %% animation state of second animation.
 	  font    :: epx:epx_font(),    %% type=text|button|value
@@ -1125,6 +1126,8 @@ widget_set([Option|Flags], W) ->
 	{value,V} when is_number(V) ->
 	    V1 = clamp(V, W#widget.min, W#widget.max),
 	    widget_set(Flags, W#widget{value=V1});
+	{vscale,V} when is_number(V) ->
+	    widget_set(Flags, W#widget{vscale=V});
 	{format,F} when is_list(F) ->
 	    widget_set(Flags, W#widget{format=F});
 	{state, active} when W#widget.state =/= active ->
@@ -1181,6 +1184,7 @@ widget_get([Flag|Flags], W, Acc) ->
 	min -> widget_get(Flags, W, [{min,W#widget.min}|Acc]);
 	max -> widget_get(Flags, W, [{max,W#widget.max}|Acc]);
 	value -> widget_get(Flags, W, [{value,W#widget.value}|Acc]);
+	vscale -> widget_get(Flags, W, [{vscale,W#widget.value}|Acc]);
 	format -> widget_get(Flags, W, [{format,W#widget.format}|Acc]);
 	state -> widget_get(Flags, W, [{state,W#widget.state}|Acc]);
 	_ -> widget_get(Flags, W, Acc)
@@ -1375,7 +1379,10 @@ draw_widget(W, Win, {X,Y}, _State) ->
 	value ->
 	    epx_gc:draw(
 	      fun() ->
-		      Value = W#widget.value,
+		      Value = case W#widget.vscale of
+				  undefined -> W#widget.value;
+				  Scale -> Scale * W#widget.value
+			      end,
 		      Format = W#widget.format,
 		      Text = 
 			  if Value =:= undefined ->
