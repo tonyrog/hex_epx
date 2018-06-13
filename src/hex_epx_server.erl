@@ -651,7 +651,7 @@ widgets_event([],_Event,_Window,State) ->
     
 %%
 %% Find all widgets in window WinID that is hit by the
-%% point (X,Y). 
+%% point (X,Y).
 %% FIXME? Return a Z sorted list
 %%
 widgets_at_location(Pos,XY,WinID,State) ->
@@ -685,10 +685,10 @@ select_one(ID,Pos,XY,Acc,ChildrenFirst,State) ->
 	    select_children(W,ID,Pos,XY1,Acc1,State)
     end.
 
-select_children(W,_ID,_Pos,_XY,Acc,_State) 
-  when W#widget.disabled =:= true; W#widget.disabled =:= all ->
+select_children(W,_ID,_Pos,_XY,Acc,_State) when W#widget.disabled =:= all ->
     Acc;
-select_children(W,ID,Pos,XY,Acc,State) when W#widget.type =:= panel ->
+select_children(W,ID,Pos,XY,Acc,State) when 
+      W#widget.type =:= panel, W#widget.disabled =:= false ->
     case tab_at_location(W,Pos,XY) of
 	0 -> %% check in current tab
 	    V = W#widget.value,
@@ -712,6 +712,7 @@ select_children(W,ID,Pos,XY,Acc,State) when W#widget.type =:= panel ->
 select_children(_W,ID,Pos,XY,Acc,State) ->
     select_tree(ID,Pos,XY,Acc,State).
 
+
 select_widget(W,_Pos,_XY,Acc,_State)
   when W#widget.disabled =:= true; W#widget.disabled =:= all ->
     Acc;
@@ -729,7 +730,7 @@ select_widget(W,Pos={Xi,Yi,_Z},XY={X,Y},Acc,_State) ->
     end.
 
 %% Check if (X,Y) is within any of the panel tabs
-tab_at_location(W,{Xi,Yi,_Z},XY={Xw,Yw}) ->
+tab_at_location(W,{Xi,Yi,_Z},_XY={Xw,Yw}) ->
     {_Ascent,TextDims,MaxW,MaxH} = tabs_item_box(W),
     N = length(TextDims),
     Width =  (MaxW+?TABS_X_PAD),
@@ -764,14 +765,14 @@ in_rect(X,Y,Xr,Yr,Wr,Hr) ->
 topimage_at_location(_W,_Pos,_XY,undefined) ->
     false;
 topimage_at_location(W=#widget {orientation=horizontal},{X,Y,_},
-		     XY={Xi,Yi},Image) ->
+		     _XY={Xi,Yi},Image) ->
     Height = epx:pixmap_info(Image,height),
     Y1 = Yi + (W#widget.height - Height) div 2,
     Y2 = Yi + (W#widget.height + Height) div 2,
     (X >= Xi) andalso (X < Xi + W#widget.width) 
 	andalso (Y >= Y1) andalso (Y =< Y2);
 topimage_at_location(W=#widget {orientation=vertical},{X,Y,_},
-		     XY={Xi,Yi},Image) ->
+		     _XY={Xi,Yi},Image) ->
     Width = epx:pixmap_info(Image,width),
     X1 = Xi + (W#widget.width - Width) div 2,
     X2 = Xi + (W#widget.width + Width) div 2,
@@ -854,7 +855,7 @@ widget_event({button_press,_Button,Where},W,XY,Window,State) ->
 		    W#widget { value = Value }
 	    end;
 	_ ->
-	    {Xi,Yi} = widget_pos(W,XY),
+	    {Xi,Yi} = XY,
 	    {X,Y,_} = Where,
 	    callback_all(W#widget.id,State#state.subs,
 			 [{press,1},{x,X-Xi},{y,Y-Yi}]),
@@ -873,7 +874,7 @@ widget_event({button_release,_Button,Where},W,XY,Window,State) ->
 	panel ->
 	    W;
 	_ ->
-	    {Xi,Yi} = widget_pos(W,XY),
+	    {Xi,Yi} = XY,
 	    {X,Y,_} = Where,
 	    callback_all(W#widget.id,State#state.subs,
 			 [{press,0},{x,X-Xi},{y,Y-Yi}]),
@@ -900,8 +901,8 @@ widget_event(_Event,W,_XY,_Window,_State) ->
 %% Calcuate the slider value given coordinate X,Y either horizontal or
 %% vertical. return a floating point value between 0 and 1
 widget_slider_value(W=#widget {min=Min,max=Max,orientation=horizontal},
-		    {X,_Y,_Z},{Xo,_Yo}) ->
-    Xi = if W#widget.relative -> W#widget.x+Xo; true -> W#widget.x end,
+		    {X,_Y,_Z},{Xi,_Yi}) ->
+    %% Xi = if W#widget.relative -> W#widget.x+Xo; true -> W#widget.x end,
     Width = W#widget.width-2,
     if is_number(Min), is_number(Max), Width > 0 ->
 	    X0 = Xi+1,
@@ -913,8 +914,8 @@ widget_slider_value(W=#widget {min=Min,max=Max,orientation=horizontal},
 	    false
     end;
 widget_slider_value(W=#widget {min=Min, max=Max,orientation=vertical},
-		    {_X,Y,_Z},{_Xo,Yo}) ->
-    Yi = if W#widget.relative -> W#widget.y+Yo; true -> W#widget.y end,
+		    {_X,Y,_Z},{_Xi,Yi}) ->
+    %% Yi = if W#widget.relative -> W#widget.y+Yo; true -> W#widget.y end,
     Height = W#widget.height-2,
     if is_number(Min), is_number(Max), Height > 0 ->
 	    Y1 = Yi+1,
@@ -1303,7 +1304,8 @@ draw_one_(ID, Win, XY, W, ChildrenFirst, State) ->
 %% Fixme: implement hidden =:= none to override all hidden children!
 draw_children(_ID, _Win, _XY, W, State) when W#widget.hidden =:= all ->
     State;
-draw_children(ID, Win, XY, W, State) when W#widget.type =:= panel ->
+draw_children(ID, Win, XY, W, State) when 
+      W#widget.type =:= panel, W#widget.disabled =:= false ->
     V = W#widget.value,
     N = length(W#widget.tabs),
     if V =:= 0 ->
@@ -1672,7 +1674,7 @@ draw_one_background(Win,W,X,Y,Width,Height,N,Color,Image,Anim,Frame) ->
 		button ->
 		    epx:draw_roundrect(Win#widget.image,X,Y,Width,Height,8,8);
 		_ ->
-		    epx:draw_rectangle(Win#widget.image, X, Y, Width, Height)
+		    epx:draw_rectangle(Win#widget.image,X,Y,Width,Height)
 	    end
     end,
     %% optionally draw image
